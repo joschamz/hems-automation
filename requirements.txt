@@ -5,6 +5,7 @@ matplotlib==3.7.1
 seaborn==0.12.2
 numpy==1.24.3
 pandas==2.0.1
+entsoe-py==0.6.2
 jupyterlab-dash==0.1.0a3
 scikit-learn==1.2.2
 statsmodels==0.13.5
