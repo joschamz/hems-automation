@@ -109,6 +109,44 @@ Open-Meteo APIs. If API data cannot be retrieved, it falls back to a local
 clear-sky approximation while keeping the same output shape.
 Timestamps in the `time` column are returned in UTC.
 
+## Day-Ahead Price Utility
+
+You can fetch ENTSOE day-ahead electricity prices (DE_LU bidding zone) for any
+date — past or future — using the same 96-row, 15-minute UTC format as the
+solar utility.
+
+`get_daily_prices()` always returns a strict UTC calendar day: first row at
+`00:00:00+00:00`, last row at `23:45:00+00:00`.
+
+Place your ENTSOE API key in `secrets/entsoe_api_key.txt` (UUID format).
+Register for a free key at [transparency.entsoe.eu](https://transparency.entsoe.eu).
+
+```python
+from example_files.prices import get_daily_prices
+
+# Default: tomorrow's prices
+tomorrow_df = get_daily_prices()
+
+# Historical prices (any past date)
+past_df = get_daily_prices("2025-01-15", mode="historical")
+
+# Explicit future / forecast date
+future_df = get_daily_prices("2026-03-15", mode="forecast")
+```
+
+Output columns (96 rows, 15-min UTC intervals):
+
+| Column | Description |
+|---|---|
+| `time` | UTC timestamp (timezone-aware, matches solar `time` column) |
+| `price_eur_mwh` | Day-ahead price in EUR/MWh |
+| `price_cent_kwh` | Same price in ct/kWh (`price_eur_mwh / 10`) |
+| `source` | `"entsoe_api"` · `"not_published"` · `"fallback_unavailable"` |
+
+When tomorrow's prices have not been published yet (ENTSOE typically publishes
+D+1 prices around 13:00 CET), the function returns 96 NaN rows with
+`source="not_published"` instead of raising an error.
+
 ## Limitations
 
 Development libraries are part of the production environment, normally these would be separate as the production code should be as slim as possible.
