@@ -13,3 +13,7 @@ scikit-learn==1.2.2
 statsmodels==0.13.5
 pytest==7.3.1
 nbdime==4.0.2
+requests==2.31.0
+xgboost==1.7.5
+# macOS prerequisite for LightGBM: brew install libomp
+lightgbm==4.6.0

@@ -137,3 +137,6 @@ dmypy.json
 
 # Data 
 data/
+
+# Local secrets
+secrets/
