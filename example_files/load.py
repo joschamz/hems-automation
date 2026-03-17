@@ -5,6 +5,7 @@ from typing import Optional, Union
 import joblib
 import numpy as np
 import pandas as pd
+import holidays
 
 DateLike = Union[str, date, datetime]
 
@@ -87,6 +88,10 @@ def get_daily_load_forecast(
     df_inf["day_of_week"] = df_inf.index.dayofweek
     df_inf["month"] = df_inf.index.month
     df_inf["is_weekend"] = (df_inf["day_of_week"] >= 5).astype(int)
+    de_holidays = holidays.Germany()
+    df_inf["is_holiday"] = df_inf.index.tz_localize(None).normalize().map(
+    lambda d: int(d in de_holidays)
+    )
 
     df_inf["lag_1"] = df_inf["load"].shift(1)
     df_inf["lag_4"] = df_inf["load"].shift(4)
@@ -101,6 +106,7 @@ def get_daily_load_forecast(
         "day_of_week",
         "month",
         "is_weekend",
+        "is_holiday",
         "lag_1",
         "lag_4",
         "lag_96",
