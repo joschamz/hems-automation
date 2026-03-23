@@ -1,4 +1,4 @@
-[![Shipping files](https://github.com/neuefische/ds-ml-project-template/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/neuefische/ds-ml-project-template/actions/workflows/workflow-02.yml)
+[![Shipping files](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml)
 
 # Home Energy Management System (HEMS) - Solar Energy Forecasting
 
@@ -16,29 +16,28 @@
     brew install libomp
     ```
 
-- For installing the virtual environment you can either use the [Makefile](Makefile) and run `make setup` or install it manually with the following commands:
+- Install the virtual environment and required packages with the setup script:
 
-     ```BASH
-    make setup
-    ```
-    After that active your environment by following commands:
-    ```BASH
+    ```bash
+    ./scripts/setup.sh
     source .venv/bin/activate
     ```
-Or ....
-- Install the virtual environment and the required packages by following commands:
 
-    ```BASH
+- Manual setup (alternative):
+
+    ```bash
     pyenv local 3.11.3
     python -m venv .venv
     source .venv/bin/activate
-    pip install --upgrade pip
-    pip install -r requirements.txt
+    python -m pip install --upgrade pip
+    pip install -e ".[dev]"
     ```
 
 If the notebook kernel was already running before `libomp` was installed, restart the kernel once before importing `lightgbm` again.
     
 ### **`WindowsOS`** type the following commands :
+
+If you use the `pyenv` commands below on Windows, install and configure `pyenv-win` first.
 
 - Install the virtual environment and the required packages by following commands.
 
@@ -49,7 +48,7 @@ If the notebook kernel was already running before `libomp` was installed, restar
     python -m venv .venv
     .venv\Scripts\Activate.ps1
     python -m pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install -e ".[dev]"
     ```
 
     For `Git-bash` CLI :
@@ -59,7 +58,7 @@ If the notebook kernel was already running before `libomp` was installed, restar
     python -m venv .venv
     source .venv/Scripts/activate
     python -m pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install -e ".[dev]"
     ```
 
     **`Note:`**
@@ -72,18 +71,14 @@ If the notebook kernel was already running before `libomp` was installed, restar
    
 ## Usage
 
-In order to train the model and store test data in the data folder and the model in models run:
+Run notebooks from the project root so relative paths to `data/`, `models/`, and `user_config.json` resolve correctly.
 
-**`Note`**: Make sure your environment is activated.
-
-```bash
-python example_files/train.py  
-```
-
-In order to test that predict works on a test set you created run:
+Detailed usage examples are documented in notebooks:
+- Solar utility usage: `notebooks/solar_forecast.ipynb`
+- Price utility usage: `notebooks/Example_prices_utility.ipynb`
 
 ```bash
-python example_files/predict.py models/linear_regression_model.sav data/X_test.csv data/y_test.csv
+jupyter lab
 ```
 
 ## Solar Forecast Utility
@@ -92,7 +87,7 @@ You can now call one shared function from any notebook to get one full day of
 solar prediction in 15-minute steps (96 rows) as per-interval `predicted_kwh`.
 
 ```python
-from example_files.solar import get_daily_solar_kwh
+from utils.solar_utils import get_daily_solar_kwh
 
 # Default: tomorrow
 tomorrow_df = get_daily_solar_kwh()
@@ -104,7 +99,7 @@ future_df = get_daily_solar_kwh(target_date="2026-03-15")
 past_df = get_daily_solar_kwh(target_date="2021-06-21")
 ```
 
-The function reads system parameters from `config.json` by default and uses
+The function reads system parameters from `user_config.json` by default and uses
 Open-Meteo APIs. If API data cannot be retrieved, it falls back to a local
 clear-sky approximation while keeping the same output shape.
 Timestamps in the `time` column are returned in UTC.
@@ -118,11 +113,11 @@ solar utility.
 `get_daily_prices()` always returns a strict UTC calendar day: first row at
 `00:00:00+00:00`, last row at `23:45:00+00:00`.
 
-Place your ENTSOE API key in `secrets/entsoe_api_key.txt` (UUID format).
+Place your ENTSOE API key in `secrets/entsoe_api_key.txt` (UUID format). The `secrets/` folder is tracked, but files inside are ignored by git.
 Register for a free key at [transparency.entsoe.eu](https://transparency.entsoe.eu).
 
 ```python
-from example_files.prices import get_daily_prices
+from utils.prices_utils import get_daily_prices
 
 # Default: tomorrow's prices
 tomorrow_df = get_daily_prices()
