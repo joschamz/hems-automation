@@ -9,6 +9,7 @@ import requests
 PathLike = Union[str, Path]
 
 ARCHIVE_ENDPOINT = "https://archive-api.open-meteo.com/v1/archive"
+FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 REQUEST_TIMEOUT_SECONDS = 60
 
 COMMON_HOURLY_WEATHER_VARS = [
@@ -67,7 +68,7 @@ def _resolve_output_path(path_like: PathLike) -> Path:
     return Path(__file__).resolve().parents[1] / path
 
 
-def load_weather_config(config_path: PathLike = "user_config.json") -> dict:
+def load_weather_config(config_path: PathLike = "config.json") -> dict:
     config_path = _resolve_path(config_path)
 
     with config_path.open("r", encoding="utf-8") as file_handle:
@@ -81,31 +82,88 @@ def load_weather_config(config_path: PathLike = "user_config.json") -> dict:
     return config
 
 
+def _normalize_calendar(household_calendar: pd.DataFrame) -> pd.DataFrame:
+    if "utc_timestamp" not in household_calendar.columns:
+        raise ValueError("household_calendar must contain 'utc_timestamp'")
+
+    calendar_df = household_calendar.copy()
+    calendar_df["utc_timestamp"] = pd.to_datetime(
+        calendar_df["utc_timestamp"], utc=True, errors="coerce"
+    )
+    calendar_df = (
+        calendar_df
+        .dropna(subset=["utc_timestamp"])
+        .sort_values("utc_timestamp")
+        .drop_duplicates(subset=["utc_timestamp"])
+        .reset_index(drop=True)
+    )
+
+    if calendar_df.empty:
+        raise ValueError("household_calendar is empty")
+
+    return calendar_df
+
+
+def _build_api_params(
+    config: dict,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    params = {
+        "latitude": config["lat"],
+        "longitude": config["lon"],
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(COMMON_HOURLY_WEATHER_VARS),
+        "timezone": "UTC",
+    }
+
+    if (
+        "global_tilted_irradiance" in COMMON_HOURLY_WEATHER_VARS
+        and {"tilt", "azimuth"}.issubset(config)
+    ):
+        params["tilt"] = config["tilt"]
+        params["azimuth"] = config["azimuth"]
+
+    return params
+
+
+def _parse_hourly_payload(payload: dict, source_label: str) -> pd.DataFrame:
+    if isinstance(payload, dict) and payload.get("error"):
+        reason = payload.get("reason", "Unknown API error")
+        raise ValueError(f"Open-Meteo API error: {reason}")
+
+    hourly_payload = payload.get("hourly", {})
+    if "time" not in hourly_payload:
+        raise ValueError(
+            f"Missing 'time' in hourly payload. Available keys: {list(hourly_payload.keys())}"
+        )
+
+    chunk_df = pd.DataFrame(hourly_payload)
+    chunk_df["time"] = pd.to_datetime(chunk_df["time"], utc=True, errors="coerce")
+    chunk_df = chunk_df.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
+
+    for weather_col in COMMON_HOURLY_WEATHER_VARS:
+        if weather_col not in chunk_df.columns:
+            chunk_df[weather_col] = np.nan
+
+    chunk_df = chunk_df[["time", *COMMON_HOURLY_WEATHER_VARS]].copy()
+    chunk_df["source"] = source_label
+
+    return chunk_df
+
+
 def fetch_raw_historical_weather(
     household_calendar: pd.DataFrame,
-    config_path: PathLike = "user_config.json",
+    config_path: PathLike = "config.json",
     save_raw_path: Optional[PathLike] = None,
 ) -> pd.DataFrame:
     """
     Fetch raw hourly historical weather data from the Open-Meteo archive API
     for the timestamp range covered by household_calendar.
-
-    household_calendar must contain:
-    - utc_timestamp (timezone-aware or parseable to UTC)
     """
-    if "utc_timestamp" not in household_calendar.columns:
-        raise ValueError("household_calendar must contain 'utc_timestamp'")
-
-    calendar_df = household_calendar.copy()
-    calendar_df["utc_timestamp"] = pd.to_datetime(calendar_df["utc_timestamp"], utc=True, errors="coerce")
-    calendar_df = calendar_df.dropna(subset=["utc_timestamp"]).sort_values("utc_timestamp").reset_index(drop=True)
-
-    if calendar_df.empty:
-        raise ValueError("household_calendar is empty")
-
+    calendar_df = _normalize_calendar(household_calendar)
     config = load_weather_config(config_path)
-    latitude = config["lat"]
-    longitude = config["lon"]
 
     historical_start_date = calendar_df["utc_timestamp"].min().date()
     historical_end_date = calendar_df["utc_timestamp"].max().date()
@@ -122,21 +180,11 @@ def fetch_raw_historical_weather(
         chunk_start = max(historical_start_date, period.start_time.date())
         chunk_end = min(historical_end_date, period.end_time.date())
 
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "start_date": chunk_start.isoformat(),
-            "end_date": chunk_end.isoformat(),
-            "hourly": ",".join(COMMON_HOURLY_WEATHER_VARS),
-            "timezone": "UTC",
-        }
-
-        if (
-            "global_tilted_irradiance" in COMMON_HOURLY_WEATHER_VARS
-            and {"tilt", "azimuth"}.issubset(config)
-        ):
-            params["tilt"] = config["tilt"]
-            params["azimuth"] = config["azimuth"]
+        params = _build_api_params(
+            config=config,
+            start_date=chunk_start.isoformat(),
+            end_date=chunk_end.isoformat(),
+        )
 
         response = requests.get(
             ARCHIVE_ENDPOINT,
@@ -144,47 +192,64 @@ def fetch_raw_historical_weather(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
+
         payload = response.json()
-
-        if isinstance(payload, dict) and payload.get("error"):
-            reason = payload.get("reason", "Unknown API error")
-            raise ValueError(
-                f"Open-Meteo archive API error for {chunk_start} -> {chunk_end}: {reason}"
-            )
-
-        hourly_payload = payload.get("hourly", {})
-        if "time" not in hourly_payload:
-            raise ValueError(
-                f"Missing 'time' in hourly payload for {chunk_start} -> {chunk_end}. "
-                f"Available keys: {list(hourly_payload.keys())}"
-            )
-
-        chunk_df = pd.DataFrame(hourly_payload)
-        chunk_df["time"] = pd.to_datetime(chunk_df["time"], utc=True, errors="coerce")
-        chunk_df = chunk_df.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
-
-        for weather_col in COMMON_HOURLY_WEATHER_VARS:
-            if weather_col not in chunk_df.columns:
-                chunk_df[weather_col] = np.nan
-
-        chunk_df = chunk_df[["time", *COMMON_HOURLY_WEATHER_VARS]].copy()
-        chunk_df["source"] = "open_meteo_archive"
-
+        chunk_df = _parse_hourly_payload(
+            payload=payload,
+            source_label="open_meteo_archive",
+        )
         chunk_frames.append(chunk_df)
 
     if not chunk_frames:
         raise ValueError("No historical weather chunks were fetched.")
 
-    raw_weather_df = pd.concat(chunk_frames, ignore_index=True)
-    raw_weather_df = raw_weather_df.sort_values("time").drop_duplicates(
-        subset=["time"],
-        keep="first",
-    ).reset_index(drop=True)
+    raw_weather_df = (
+        pd.concat(chunk_frames, ignore_index=True)
+        .sort_values("time")
+        .drop_duplicates(subset=["time"], keep="first")
+        .reset_index(drop=True)
+    )
 
     if save_raw_path is not None:
         save_raw_path = _resolve_output_path(save_raw_path)
         save_raw_path.parent.mkdir(parents=True, exist_ok=True)
         raw_weather_df.to_csv(save_raw_path, index=False)
+
+    return raw_weather_df
+
+
+def fetch_raw_forecast_weather(
+    household_calendar: pd.DataFrame,
+    config_path: PathLike = "config.json",
+) -> pd.DataFrame:
+    """
+    Fetch raw hourly forecast weather data from the Open-Meteo forecast API
+    for the timestamp range covered by household_calendar.
+    """
+    calendar_df = _normalize_calendar(household_calendar)
+    config = load_weather_config(config_path)
+
+    forecast_start_date = calendar_df["utc_timestamp"].min().date()
+    forecast_end_date = calendar_df["utc_timestamp"].max().date()
+
+    params = _build_api_params(
+        config=config,
+        start_date=forecast_start_date.isoformat(),
+        end_date=forecast_end_date.isoformat(),
+    )
+
+    response = requests.get(
+        FORECAST_ENDPOINT,
+        params=params,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+    raw_weather_df = _parse_hourly_payload(
+        payload=payload,
+        source_label="open_meteo_forecast",
+    )
 
     return raw_weather_df
 
@@ -205,9 +270,16 @@ def build_full_weather_15min(
         raise ValueError("raw_weather_df must contain 'time'")
 
     calendar_df = household_calendar.copy()
-    calendar_df["utc_timestamp"] = pd.to_datetime(calendar_df["utc_timestamp"], utc=True, errors="coerce")
+    calendar_df["utc_timestamp"] = pd.to_datetime(
+        calendar_df["utc_timestamp"], utc=True, errors="coerce"
+    )
     calendar_df = calendar_df.dropna(subset=["utc_timestamp"])
-    calendar_df = calendar_df.sort_values("utc_timestamp").drop_duplicates().reset_index(drop=True)
+    calendar_df = (
+        calendar_df
+        .sort_values("utc_timestamp")
+        .drop_duplicates(subset=["utc_timestamp"])
+        .reset_index(drop=True)
+    )
 
     if calendar_df.empty:
         raise ValueError("household_calendar is empty after timestamp parsing")
@@ -236,7 +308,7 @@ def build_full_weather_15min(
 
     full_weather_df = full_weather_indexed.reindex(calendar_index).reset_index()
     full_weather_df = full_weather_df.rename(columns={"index": "utc_timestamp"})
-    full_weather_df["source"] = "open_meteo_archive_interpolated"
+    full_weather_df["source"] = "open_meteo_interpolated"
 
     if save_full_path is not None:
         save_full_path = _resolve_output_path(save_full_path)
@@ -268,24 +340,17 @@ def add_derived_weather_features(full_weather_df: pd.DataFrame) -> pd.DataFrame:
 
 def build_weather_for_household_calendar(
     household_timestamps: Union[pd.Index, pd.Series, pd.DataFrame],
-    config_path: PathLike = "user_config.json",
+    config_path: PathLike = "config.json",
     save_raw_path: Optional[PathLike] = None,
     save_full_path: Optional[PathLike] = None,
     include_derived: bool = False,
 ) -> pd.DataFrame:
     """
-    End-to-end weather builder for the household pipeline.
+    Build weather data aligned to the household calendar.
 
-    Parameters
-    ----------
-    household_timestamps:
-        Can be:
-        - DatetimeIndex
-        - Series of timestamps
-        - DataFrame containing utc_timestamp
-    include_derived:
-        If True, derived weather features are added.
-        Keep this False unless the model was trained with them.
+    Logic:
+    - past timestamps  -> archive API
+    - future timestamps -> forecast API
     """
     if isinstance(household_timestamps, pd.DataFrame):
         if "utc_timestamp" not in household_timestamps.columns:
@@ -306,16 +371,57 @@ def build_weather_for_household_calendar(
         errors="coerce",
     )
     household_calendar = household_calendar.dropna(subset=["utc_timestamp"])
-    household_calendar = household_calendar.drop_duplicates().sort_values("utc_timestamp").reset_index(drop=True)
+    household_calendar = (
+        household_calendar
+        .drop_duplicates(subset=["utc_timestamp"])
+        .sort_values("utc_timestamp")
+        .reset_index(drop=True)
+    )
 
     if household_calendar.empty:
         raise ValueError("household_timestamps produced an empty calendar")
 
-    raw_weather_df = fetch_raw_historical_weather(
-        household_calendar=household_calendar,
-        config_path=config_path,
-        save_raw_path=save_raw_path,
+    now_utc = pd.Timestamp.now(tz="UTC")
+
+    historical_calendar = household_calendar[
+        household_calendar["utc_timestamp"] < now_utc
+    ].copy()
+
+    forecast_calendar = household_calendar[
+        household_calendar["utc_timestamp"] >= now_utc
+    ].copy()
+
+    raw_frames = []
+
+    if not historical_calendar.empty:
+        historical_raw_df = fetch_raw_historical_weather(
+            household_calendar=historical_calendar,
+            config_path=config_path,
+            save_raw_path=None,
+        )
+        raw_frames.append(historical_raw_df)
+
+    if not forecast_calendar.empty:
+        forecast_raw_df = fetch_raw_forecast_weather(
+            household_calendar=forecast_calendar,
+            config_path=config_path,
+        )
+        raw_frames.append(forecast_raw_df)
+
+    if not raw_frames:
+        raise ValueError("No weather data could be fetched for the requested calendar")
+
+    raw_weather_df = (
+        pd.concat(raw_frames, ignore_index=True)
+        .sort_values("time")
+        .drop_duplicates(subset=["time"], keep="first")
+        .reset_index(drop=True)
     )
+
+    if save_raw_path is not None:
+        save_raw_path = _resolve_output_path(save_raw_path)
+        save_raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_weather_df.to_csv(save_raw_path, index=False)
 
     full_weather_df = build_full_weather_15min(
         raw_weather_df=raw_weather_df,
@@ -332,6 +438,7 @@ def build_weather_for_household_calendar(
 __all__ = [
     "COMMON_HOURLY_WEATHER_VARS",
     "fetch_raw_historical_weather",
+    "fetch_raw_forecast_weather",
     "build_full_weather_15min",
     "add_derived_weather_features",
     "build_weather_for_household_calendar",

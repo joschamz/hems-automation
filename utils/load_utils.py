@@ -1,72 +1,25 @@
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import joblib
 import numpy as np
 import pandas as pd
 import holidays
 
-DateLike = Union[str, date, datetime]
+DateTimeLike = Union[str, datetime, pd.Timestamp]
 
-# This model is currently trained for household 1 only.
 SUPPORTED_HOUSEHOLD_ID = 1
-
-FEATURE_COLS = [
-    "temperature_2m",
-    "relative_humidity_2m",
-    "dew_point_2m",
-    "apparent_temperature",
-    "precipitation",
-    "rain",
-    "snowfall",
-    "snow_depth",
-    "weather_code",
-    "pressure_msl",
-    "surface_pressure",
-    "cloud_cover",
-    "cloud_cover_low",
-    "cloud_cover_mid",
-    "cloud_cover_high",
-    "shortwave_radiation",
-    "direct_radiation",
-    "diffuse_radiation",
-    "global_tilted_irradiance",
-    "sunshine_duration",
-    "wind_speed_10m",
-    "wind_direction_10m",
-    "wind_gusts_10m",
-    "et0_fao_evapotranspiration",
-    "vapour_pressure_deficit",
-    "hour",
-    "day_of_week",
-    "month",
-    "is_weekend",
-    "is_holiday",
-    "lag_1",
-    "lag_2",
-    "lag_3",
-    "lag_96",
-    "lag_192",
-    "rolling_mean_1h",
-    "rolling_mean_24h",
-]
+FORECAST_HORIZON = 96  # 96 x 15 min = 24h
 
 
-def _parse_target_date(target_date: Optional[DateLike]) -> date:
-    if target_date is None:
-        return (pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)).date()
-    if isinstance(target_date, datetime):
-        return target_date.date()
-    if isinstance(target_date, date):
-        return target_date
-    if isinstance(target_date, str):
-        return datetime.strptime(target_date, "%Y-%m-%d").date()
-    raise TypeError("target_date must be None, date, datetime, or YYYY-MM-DD string")
-
+# ------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------
 
 def _resolve_path(path_like: Union[str, Path]) -> Path:
     path = Path(path_like)
+
     if path.is_absolute():
         return path
 
@@ -74,83 +27,86 @@ def _resolve_path(path_like: Union[str, Path]) -> Path:
         Path.cwd() / path,
         Path(__file__).resolve().parents[1] / path,
     ]
-    found = next((c for c in candidates if c.exists()), None)
-    if found:
+
+    found = next((candidate for candidate in candidates if candidate.exists()), None)
+    if found is not None:
         return found
 
     raise FileNotFoundError(f"Could not find file: {path_like}")
 
 
-def load_baseline_household_history(
-    csv_path: Union[str, Path] = "data/household_data_15min_singleindex.csv",
-    household_id: int = 1,
+# ------------------------------------------------------------
+# Time parsing
+# ------------------------------------------------------------
+
+def _parse_forecast_time(forecast_time: DateTimeLike) -> pd.Timestamp:
+    ts = pd.Timestamp(forecast_time)
+
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+
+    return ts
+
+
+# ------------------------------------------------------------
+# Dataset loader
+# ------------------------------------------------------------
+
+def load_feature_engineered_dataset(
+    csv_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
 ) -> pd.DataFrame:
+
     csv_path = _resolve_path(csv_path)
 
     df = pd.read_csv(csv_path)
-    df["utc_timestamp"] = pd.to_datetime(df["utc_timestamp"], utc=True)
-    df = df.set_index("utc_timestamp").sort_index()
 
-    grid_import_col = f"DE_KN_residential{household_id}_grid_import"
-    pv_col = f"DE_KN_residential{household_id}_pv"
-    grid_export_col = f"DE_KN_residential{household_id}_grid_export"
+    if "timestamp" not in df.columns:
+        raise ValueError("Dataset must contain 'timestamp' column")
 
-    if grid_import_col not in df.columns:
-        raise ValueError(f"Missing required column: {grid_import_col}")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.sort_values("timestamp").set_index("timestamp")
 
-    house_df = df[[grid_import_col]].copy()
-    house_df[pv_col] = df[pv_col] if pv_col in df.columns else 0.0
-    house_df[grid_export_col] = df[grid_export_col] if grid_export_col in df.columns else 0.0
-
-    house_diff = house_df.diff()
-
-    house_diff["load"] = (
-        house_diff[grid_import_col]
-        + house_diff[pv_col]
-        - house_diff[grid_export_col]
-    ).clip(lower=0)
-
-    return house_diff[["load"]].dropna().copy()
+    return df
 
 
-def load_weather_features(
-    weather_path: Union[str, Path] = "data/weather_full_15min.csv",
+# ------------------------------------------------------------
+# Feature builder (critical)
+# ------------------------------------------------------------
+
+def _build_feature_row_from_dataset(
+    df_all: pd.DataFrame,
+    forecast_time: pd.Timestamp,
+    feature_cols: list,
 ) -> pd.DataFrame:
-    weather_path = _resolve_path(weather_path)
 
-    weather_df = pd.read_csv(weather_path)
-    weather_df["utc_timestamp"] = pd.to_datetime(weather_df["utc_timestamp"], utc=True)
-    weather_df = weather_df.sort_values("utc_timestamp").reset_index(drop=True)
+    df_all = df_all.copy()
+    df_all.index = pd.to_datetime(df_all.index, utc=True)
+    df_all = df_all.sort_index()
 
-    if "source" in weather_df.columns:
-        weather_df = weather_df.drop(columns=["source"])
+    if "load" not in df_all.columns:
+        raise ValueError("Dataset must contain 'load' column")
 
-    return weather_df
+    if forecast_time not in df_all.index:
+        raise ValueError(f"forecast_time {forecast_time} not found in dataset index")
 
+    # --------------------------------------------------------
+    # Historical load (ONLY before forecast_time)
+    # --------------------------------------------------------
+    df_hist = df_all.loc[df_all.index < forecast_time, ["load"]].copy()
 
-def _build_feature_row(
-    load_history_df: pd.DataFrame,
-    weather_row_df: pd.DataFrame,
-) -> pd.DataFrame:
-    load_history_df = load_history_df.copy()
-    load_history_df.index = pd.to_datetime(load_history_df.index, utc=True)
-    load_history_df = load_history_df.sort_index()
+    if len(df_hist) < 192:
+        raise ValueError("Not enough history for lag_192")
 
-    if "load" not in load_history_df.columns:
-        raise ValueError("load_history_df must contain a 'load' column")
+    # FIX: enforce continuous 15-min index
+    df_hist = df_hist.asfreq("15min")
+    df_hist["load"] = df_hist["load"].ffill()
 
-    if len(load_history_df) < 192:
-        raise ValueError("Not enough load history to compute lag_192")
-
-    weather_row_df = weather_row_df.copy()
-    weather_row_df["utc_timestamp"] = pd.to_datetime(weather_row_df["utc_timestamp"], utc=True)
-    weather_row_df = weather_row_df.set_index("utc_timestamp").sort_index()
-
-    if len(weather_row_df) != 1:
-        raise ValueError("weather_row_df must contain exactly one row")
-
-    forecast_time = weather_row_df.index[0]
-    weather_row = weather_row_df.iloc[0].to_dict()
+    # --------------------------------------------------------
+    # Row at forecast time (for weather)
+    # --------------------------------------------------------
+    row_at_forecast = df_all.loc[[forecast_time]].copy()
 
     de_holidays = holidays.Germany()
 
@@ -159,88 +115,105 @@ def _build_feature_row(
         "day_of_week": forecast_time.dayofweek,
         "month": forecast_time.month,
         "is_weekend": int(forecast_time.dayofweek >= 5),
-        "is_holiday": int(forecast_time.tz_localize(None).normalize() in de_holidays),
-        "lag_1": load_history_df["load"].iloc[-1],
-        "lag_2": load_history_df["load"].iloc[-2],
-        "lag_3": load_history_df["load"].iloc[-3],
-        "lag_96": load_history_df["load"].iloc[-96],
-        "lag_192": load_history_df["load"].iloc[-192],
-        "rolling_mean_1h": load_history_df["load"].iloc[-4:].mean(),
-        "rolling_mean_24h": load_history_df["load"].iloc[-96:].mean(),
+        "is_holiday": int(
+            forecast_time.tz_localize(None).normalize() in de_holidays
+        ),
+        "lag_1": df_hist["load"].iloc[-1],
+        "lag_2": df_hist["load"].iloc[-2],
+        "lag_3": df_hist["load"].iloc[-3],
+        "lag_96": df_hist["load"].iloc[-96],
+        "lag_192": df_hist["load"].iloc[-192],
+        "delta_1": df_hist["load"].iloc[-1] - df_hist["load"].iloc[-2],
+        "delta_2": df_hist["load"].iloc[-2] - df_hist["load"].iloc[-3],
+        "rolling_mean_1h": df_hist["load"].iloc[-4:].mean(),
+        "rolling_mean_24h": df_hist["load"].iloc[-96:].mean(),
+        "rolling_std_1h": df_hist["load"].iloc[-4:].std(),
     }
 
-    for col, val in weather_row.items():
-        feature_row[col] = val
+    # --------------------------------------------------------
+    # Weather features (validated)
+    # --------------------------------------------------------
+    for col in row_at_forecast.columns:
+        if col in feature_cols:
+            val = row_at_forecast.iloc[0][col]
+
+            if pd.isna(val):
+                raise ValueError(f"Weather feature {col} is NaN at forecast_time")
+
+            feature_row[col] = val
 
     X_latest = pd.DataFrame([feature_row])
 
-    missing_cols = [col for col in FEATURE_COLS if col not in X_latest.columns]
+    # enforce exact feature order
+    missing_cols = [col for col in feature_cols if col not in X_latest.columns]
     if missing_cols:
         raise ValueError(f"Missing required feature columns: {missing_cols}")
 
-    return X_latest[FEATURE_COLS]
+    return X_latest[feature_cols]
 
+
+# ------------------------------------------------------------
+# Main forecast function
+# ------------------------------------------------------------
 
 def get_daily_load_forecast(
-    target_date: Optional[DateLike] = None,
+    forecast_time: DateTimeLike,
     household_id: int = 1,
     model_path: Union[str, Path] = "models/load_forecast_model.pkl",
-    household_csv_path: Union[str, Path] = "data/household_data_15min_singleindex.csv",
-    weather_csv_path: Union[str, Path] = "data/weather_full_15min.csv",
+    feature_dataset_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
 ) -> pd.DataFrame:
     """
-    Weather-aware prototype day-ahead household load forecast.
-    Returns 96 rows at 15-minute UTC resolution.
+    Forecast next 24h using:
+    - historical load (from dataset)
+    - weather (already stored in dataset)
+
+    Train-once → predict-many design
     """
 
     if household_id != SUPPORTED_HOUSEHOLD_ID:
         raise ValueError(
-            f"Current saved model is trained only for household_id={SUPPORTED_HOUSEHOLD_ID}"
+            f"Model only supports household_id={SUPPORTED_HOUSEHOLD_ID}"
         )
 
-    target_day = _parse_target_date(target_date)
+    forecast_time = _parse_forecast_time(forecast_time)
+
+    # --------------------------------------------------------
+    # Load model (with feature_cols)
+    # --------------------------------------------------------
     model_path = _resolve_path(model_path)
+    bundle = joblib.load(model_path)
 
-    model = joblib.load(model_path)
+    if isinstance(bundle, dict):
+        model = bundle["model"]
+        feature_cols = bundle["feature_cols"]
+    else:
+        raise ValueError("Model must be saved as dict with model + feature_cols")
 
-    load_history_df = load_baseline_household_history(
-        csv_path=household_csv_path,
-        household_id=household_id,
+    # --------------------------------------------------------
+    # Load dataset
+    # --------------------------------------------------------
+    df_all = load_feature_engineered_dataset(feature_dataset_path)
+
+    if forecast_time > df_all.index.max():
+        raise ValueError("forecast_time beyond dataset range")
+
+    # --------------------------------------------------------
+    # Build features
+    # --------------------------------------------------------
+    X_latest = _build_feature_row_from_dataset(
+        df_all=df_all,
+        forecast_time=forecast_time,
+        feature_cols=feature_cols,
     )
 
-    weather_df = load_weather_features(weather_path=weather_csv_path)
-
-    target_day_ts = pd.Timestamp(target_day, tz="UTC")
-
-    weather_day_df = weather_df[
-        weather_df["utc_timestamp"].dt.normalize() == target_day_ts.normalize()
-    ].copy()
-
-    if weather_day_df.empty:
-        raise ValueError(f"No weather rows found for target_date={target_day}")
-
-    # Use the first 15-minute weather row of the target day as forecast origin
-    weather_row_df = weather_day_df.iloc[[0]].copy()
-    forecast_time = weather_row_df["utc_timestamp"].iloc[0]
-
-    # Keep only load history available before the forecast origin
-    load_history_df = load_history_df[
-        load_history_df.index < forecast_time
-    ].copy()
-
-    if load_history_df.empty:
-        raise ValueError("No historical load data available before forecast_time")
-
-    X_latest = _build_feature_row(
-        load_history_df=load_history_df,
-        weather_row_df=weather_row_df,
-    )
-
+    # --------------------------------------------------------
+    # Predict
+    # --------------------------------------------------------
     y_pred = model.predict(X_latest).flatten()
 
     future_times = pd.date_range(
         start=forecast_time,
-        periods=96,
+        periods=FORECAST_HORIZON,
         freq="15min",
         tz="UTC",
     )
@@ -250,13 +223,11 @@ def get_daily_load_forecast(
         "predicted_kwh": np.round(y_pred, 4),
         "predicted_kw": np.round(y_pred * 4, 4),
         "household": f"residential{household_id}",
-        "source": "weather_aware_load_model",
+        "source": "historical_simulation_forecast",
     })
 
 
 __all__ = [
-    "FEATURE_COLS",
+    "load_feature_engineered_dataset",
     "get_daily_load_forecast",
-    "load_baseline_household_history",
-    "load_weather_features",
 ]

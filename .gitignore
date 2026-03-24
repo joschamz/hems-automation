@@ -136,7 +136,11 @@ dmypy.json
 .vscode
 
 # Data 
-data/
+# 1. Ignore everything inside the /data folder
+/data/*
+
+# 2. But do not ignore the /data/input folder
+!/data/input/
 
 # Local secrets
 secrets/*
