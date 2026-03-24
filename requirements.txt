@@ -19,3 +19,4 @@ scipy>=1.10.0
 xgboost==1.7.5
 # macOS prerequisite for LightGBM: brew install libomp
 lightgbm==4.6.0
+streamlit
