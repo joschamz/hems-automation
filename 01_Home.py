@@ -16,6 +16,8 @@ from utils import (
 )
 from utils.load_utils import load_feature_engineered_dataset
 from textwrap import dedent
+import plotly.graph_objects as go
+import plotly.express as px
 
 
 # =========================================================
@@ -168,6 +170,23 @@ ASSETS_DIR = Path("assets")
 LOGO_PATH = ASSETS_DIR / "logo.png"
 COVER_PATH = ASSETS_DIR / "cover.png"
 
+CONFIG_PATH = Path("user_config.json")
+
+
+def load_user_config() -> dict:
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Configuration file not found: {CONFIG_PATH}")
+
+    with CONFIG_PATH.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    required_keys = ["lat", "lon", "kwp", "tilt", "azimuth", "yield_factor"]
+    missing = [k for k in required_keys if k not in config]
+    if missing:
+        raise ValueError(f"Missing configuration keys in user_config.json: {missing}")
+
+    return config
+
 
 def image_to_base64(image_path: Path) -> str:
     if not image_path.exists():
@@ -177,6 +196,29 @@ def image_to_base64(image_path: Path) -> str:
 
 logo_b64 = image_to_base64(LOGO_PATH)
 cover_b64 = image_to_base64(COVER_PATH)
+
+try:
+    user_config = load_user_config()
+except Exception as exc:
+    st.error(f"Failed to load user configuration: {exc}")
+    st.stop()
+
+latitude = float(user_config["lat"])
+longitude = float(user_config["lon"])
+capacity_kwp = float(user_config["kwp"])
+tilt = float(user_config["tilt"])
+azimuth = float(user_config["azimuth"])
+yield_factor = float(user_config["yield_factor"])
+
+feature_dataset_path = user_config.get(
+    "feature_dataset_path",
+    DEFAULT_FEATURE_DATASET_PATH
+)
+
+load_model_path = user_config.get(
+    "load_model_path",
+    DEFAULT_LOAD_MODEL_PATH
+)
 
 
 def write_temp_solar_config(lat, lon, kwp, tilt, azimuth, yield_factor) -> str:
@@ -645,6 +687,69 @@ def build_recommendation_text(opt_summary: dict, rule_summary: dict) -> list[str
 
     return recommendations
 
+def build_interactive_energy_flow_chart(dispatch_df: pd.DataFrame) -> go.Figure:
+    plot_df = dispatch_df.copy().sort_values("utc_timestamp")
+
+    fig = go.Figure()
+
+    series_config = [
+        ("household_load_kwh", "Household Load", True),
+        ("pv_generation_kwh", "PV Generation", True),
+        ("grid_to_load_kwh", "Grid → Load", True),
+        ("battery_to_load_kwh", "Battery → Load", True),
+        ("pv_to_battery_kwh", "PV → Battery", "legendonly"),
+        ("grid_to_battery_kwh", "Grid → Battery", "legendonly"),
+        ("export_to_grid_kwh", "Export → Grid", "legendonly"),
+    ]
+
+    for col, label, visible in series_config:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["utc_timestamp"],
+                y=plot_df[col],
+                mode="lines",
+                name=label,
+                visible=visible,
+                line=dict(width=2),
+                hovertemplate=(
+                    "<b>%{fullData.name}</b><br>"
+                    "Time: %{x|%Y-%m-%d %H:%M}<br>"
+                    "Value: %{y:.3f} kWh"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        start_time = plot_df["utc_timestamp"].min().floor("D")
+        end_time = start_time + pd.Timedelta(days=1)
+
+        fig.update_layout(
+            height=460,
+            margin=dict(l=20, r=20, t=20, b=80),
+            hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.2,
+                xanchor="center",
+                x=0.5,
+                title=None,
+                itemclick="toggle",
+                itemdoubleclick="toggleothers",
+       ),
+       xaxis=dict(
+           title=None,
+           tickformat="%H:%M",
+           showgrid=True,
+           range=[start_time, end_time],
+      ),
+       yaxis=dict(
+           title="Energy (kWh)",
+           showgrid=True,
+           zeroline=False,),
+)
+
+    return fig
 
 # =========================================================
 # SIDEBAR
@@ -654,18 +759,19 @@ tomorrow_default = pd.Timestamp.now(tz="UTC").date() + timedelta(days=1)
 with st.sidebar:
     st.title("⚙️ Planning Controls")
 
+    st.markdown("### System Configuration")
+    st.caption("Managed from Admin / Configuration")
+    st.markdown(f"""
+- **Latitude:** {latitude:.6f}
+- **Longitude:** {longitude:.6f}
+- **PV Capacity:** {capacity_kwp:.2f} kWp
+- **Tilt:** {tilt:.1f}°
+- **Azimuth:** {azimuth:.1f}°
+- **Yield Factor:** {yield_factor:.2f}
+""")
+
     st.markdown("### Planning Horizon")
     planning_date = st.date_input("Planning Date", value=tomorrow_default)
-
-    st.markdown("### Location")
-    latitude = st.number_input("Latitude", value=47.659216, format="%.6f")
-    longitude = st.number_input("Longitude", value=9.175072, format="%.6f")
-
-    st.markdown("### Solar System")
-    capacity_kwp = st.number_input("PV Capacity (kWp)", min_value=0.0, value=15.0, step=0.5)
-    tilt = st.number_input("Panel Tilt (°)", min_value=0.0, max_value=90.0, value=35.0, step=1.0)
-    azimuth = st.number_input("Panel Azimuth (°)", min_value=-180.0, max_value=180.0, value=0.0, step=1.0)
-    yield_factor = st.slider("Yield Factor", min_value=0.10, max_value=1.00, value=0.70, step=0.01)
 
     st.markdown("### Battery")
     battery_capacity_kwh = st.number_input("Battery Capacity (kWh)", min_value=0.1, value=13.5, step=0.5)
@@ -684,10 +790,6 @@ with st.sidebar:
     enforce_solar_first_in_lp = st.checkbox("Enforce Solar First in LP", value=True)
     terminal_soc_value = st.number_input("Terminal SoC Value (cent/kWh)", min_value=0.0, value=0.0, step=0.1)
     min_end_soc_kwh = st.number_input("Minimum End SoC (kWh)", min_value=0.0, value=0.0, step=0.1)
-
-    st.markdown("### Advanced Paths")
-    feature_dataset_path = st.text_input("Feature Dataset Path", value=DEFAULT_FEATURE_DATASET_PATH)
-    load_model_path = st.text_input("Load Model Path", value=DEFAULT_LOAD_MODEL_PATH)
 
     run_button = st.button("🚀 Run Optimization", use_container_width=True)
 
@@ -986,16 +1088,8 @@ with tab1:
 
     with left:
         st.subheader("Integrated Energy Flow (Optimized)")
-        overview_df = optimized_dispatch_df.set_index("utc_timestamp")[[
-            "household_load_kwh",
-            "pv_generation_kwh",
-            "grid_to_load_kwh",
-            "battery_to_load_kwh",
-            "pv_to_battery_kwh",
-            "grid_to_battery_kwh",
-            "export_to_grid_kwh",
-        ]]
-        st.area_chart(overview_df)
+        energy_flow_fig = build_interactive_energy_flow_chart(optimized_dispatch_df)
+        st.plotly_chart(energy_flow_fig, use_container_width=True)
 
     with right:
         st.subheader("Battery SoC")

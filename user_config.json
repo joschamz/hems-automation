@@ -4,5 +4,7 @@
     "kwp": 20.0,
     "tilt": 35.0,
     "azimuth": 0.0,
-    "yield_factor": 0.7
+    "yield_factor": 0.7,
+    "feature_dataset_path": "data/input/shifted-date-residential1_feature_engineered_full.csv",
+    "load_model_path": "models/load_forecast_model.pkl"
 }
