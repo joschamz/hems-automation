@@ -1,0 +1,13 @@
+{
+    "interval_minutes": 15,
+    "default_sell_price_cent_kwh": 8.0,
+    "allow_grid_charging": true,
+    "grid_charge_price_threshold_cent_kwh": 10.0,
+    "cycle_penalty_cent_per_kwh": 0.001,
+    "enforce_solar_first_in_lp": true,
+    "terminal_soc_value_cent_kwh": 0.0,
+    "min_end_soc_kwh": null,
+    "optimization_horizon_hours": 48,
+    "action_horizon_hours": 36,
+    "update_frequency_hours": 1
+}
