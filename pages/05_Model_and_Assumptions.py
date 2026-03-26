@@ -1,12 +1,12 @@
 import json
-import tempfile
 from pathlib import Path
-import base64
-from datetime import date, timedelta
+from datetime import timedelta, date
+import tempfile
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 from scipy.optimize import linprog
 
 from utils import (
@@ -15,18 +15,18 @@ from utils import (
     get_daily_load_forecast,
 )
 from utils.load_utils import load_feature_engineered_dataset
-import plotly.graph_objects as go
 
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="HEMS Control Center",
-    page_icon="⚡",
+    page_title="Model & Assumptions",
+    page_icon="🧩",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
 
 # =========================================================
 # STYLING
@@ -43,10 +43,10 @@ st.markdown("""
 
     .hero-card {
         background: linear-gradient(135deg, #0f172a 0%, #111827 42%, #1e293b 100%);
+        border-radius: 26px;
         padding: 1.6rem 1.8rem;
-        border-radius: 24px;
         border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 16px 38px rgba(0,0,0,0.22);
+        box-shadow: 0 18px 42px rgba(0,0,0,0.22);
         margin-bottom: 1rem;
     }
 
@@ -54,123 +54,148 @@ st.markdown("""
         font-size: 2.15rem;
         font-weight: 800;
         color: #f8fafc;
-        margin-bottom: 0.35rem;
         line-height: 1.05;
+        margin-bottom: 0.35rem;
     }
 
     .hero-subtitle {
         color: #cbd5e1;
         font-size: 1rem;
-        margin-bottom: 0.75rem;
+        line-height: 1.7;
+        max-width: 980px;
     }
 
-    .hero-pill {
-        display: block;
-        padding: 0.55rem 0.8rem;
+    .pill {
+        display: inline-block;
+        padding: 0.46rem 0.75rem;
         border-radius: 999px;
-        color: #0f172a;
-        font-size: 0.84rem;
+        background: rgba(255,255,255,0.10);
+        color: #e2e8f0;
+        font-size: 0.82rem;
         font-weight: 700;
-        background: rgba(255,255,255,0.92);
-        border: 1px solid rgba(15,23,42,0.08);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-        margin-bottom: 0.4rem;}
-        text-align: center;
+        margin-right: 0.45rem;
+        margin-top: 0.45rem;
+        border: 1px solid rgba(255,255,255,0.08);
+    }
 
     .glass-card {
-        background: rgba(255,255,255,0.88);
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(15,23,42,0.08);
+        border-radius: 22px;
+        padding: 1rem 1rem 0.95rem 1rem;
+        box-shadow: 0 10px 28px rgba(0,0,0,0.08);
+        backdrop-filter: blur(6px);
+        height: 100%;
+    }
+
+    .kpi-card {
+        background: rgba(255,255,255,0.92);
         border: 1px solid rgba(15,23,42,0.08);
         border-radius: 20px;
-        padding: 1rem 1rem 0.95rem 1rem;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+        padding: 1rem 1rem;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.08);
         height: 100%;
-        backdrop-filter: blur(6px);
-   }
+    }
+
+    .kpi-label {
+        color: #475569;
+        font-size: 0.92rem;
+        margin-bottom: 0.3rem;
+    }
+
+    .kpi-value {
+        color: #0f172a;
+        font-size: 1.72rem;
+        font-weight: 800;
+        line-height: 1.1;
+    }
+
+    .kpi-sub {
+        color: #64748b;
+        font-size: 0.88rem;
+        margin-top: 0.35rem;
+    }
 
     .section-title {
         font-size: 1.08rem;
-        font-weight: 700;
-        margin-bottom: 0.65rem;
+        font-weight: 760;
         color: #0f172a;
+        margin-bottom: 0.6rem;
     }
 
     .muted {
         color: #475569;
-        font-size: 0.92rem;
+        font-size: 0.94rem;
+        line-height: 1.7;
     }
 
     .ok {
-        color: #22c55e;
+        color: #16a34a;
         font-weight: 700;
     }
 
     .warn {
-        color: #f59e0b;
+        color: #d97706;
         font-weight: 700;
     }
 
     .bad {
-        color: #ef4444;
+        color: #dc2626;
         font-weight: 700;
     }
 
-    .footer-box {
-        padding: 1rem 1.1rem;
-        border-radius: 18px;
-        background: rgba(255,255,255,0.88);
+    .insight-box {
+        background: rgba(255,255,255,0.92);
         border: 1px solid rgba(15,23,42,0.08);
+        border-radius: 20px;
+        padding: 1rem 1rem;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.08);
+        height: 100%;
+    }
+
+    .insight-title {
         color: #0f172a;
-    }
-    .brand-row {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        margin-bottom: 0.5rem;
+        font-size: 1rem;
+        font-weight: 760;
+        margin-bottom: 0.35rem;
     }
 
-    .brand-logo {
-        width: 82px;
-        height: 82px;
-        object-fit: contain;
-        border-radius: 16px;
-        box-shadow: 0 6px 20px rgba(0,0,0,0.18);
-        background: rgba(255,255,255,0.02);
+    .insight-text {
+        color: #475569;
+        font-size: 0.92rem;
+        line-height: 1.7;
     }
 
-    .hero-cover {
-        border-radius: 24px;
-        overflow: hidden;
-        margin-bottom: 1rem;
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
-    }
-
-    .hero-cover img {
-        width: 100%;
-        display: block;
-    }
-    div[data-testid="stMetric"] {
-        background: rgba(255,255,255,0.88);
+    .note-card {
+        background: rgba(255,255,255,0.92);
         border: 1px solid rgba(15,23,42,0.08);
-        padding: 0.85rem 1rem;
-        border-radius: 18px;
+        border-radius: 22px;
+        padding: 1.2rem 1.2rem;
+        box-shadow: 0 10px 28px rgba(0,0,0,0.08);
+    }
+
+    div[data-testid="stPlotlyChart"] {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(15,23,42,0.08);
+        border-radius: 22px;
+        padding: 0.3rem 0.35rem 0.1rem 0.35rem;
+        box-shadow: 0 10px 28px rgba(0,0,0,0.08);
     }
 </style>
 """, unsafe_allow_html=True)
 
+
 # =========================================================
-# HELPERS
+# CONSTANTS / PATHS
 # =========================================================
 DEFAULT_FEATURE_DATASET_PATH = "data/input/shifted-date-residential1_feature_engineered_full.csv"
 DEFAULT_LOAD_MODEL_PATH = "models/load_forecast_model.pkl"
-
-ASSETS_DIR = Path("assets")
-LOGO_PATH = ASSETS_DIR / "logo.png"
-COVER_PATH = ASSETS_DIR / "cover.png"
-
 CONFIG_PATH = Path("user_config.json")
 
 
+# =========================================================
+# HELPERS
+# =========================================================
 def load_user_config() -> dict:
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"Configuration file not found: {CONFIG_PATH}")
@@ -178,60 +203,22 @@ def load_user_config() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         config = json.load(f)
 
-    required_keys = ["lat", "lon", "kwp", "tilt", "azimuth", "yield_factor"]
+    required_keys = [
+        "lat", "lon", "kwp", "tilt", "azimuth", "yield_factor",
+        "battery_capacity_kwh", "initial_soc_kwh", "min_reserve_kwh",
+        "max_charge_kw", "max_discharge_kw",
+        "charge_efficiency", "discharge_efficiency",
+        "sell_price_cent_kwh", "allow_grid_charging",
+        "grid_charge_price_threshold", "cycle_penalty",
+        "enforce_solar_first_in_lp", "terminal_soc_value",
+        "min_end_soc_kwh",
+    ]
     missing = [k for k in required_keys if k not in config]
     if missing:
         raise ValueError(f"Missing configuration keys in user_config.json: {missing}")
 
     return config
 
-
-def image_to_base64(image_path: Path) -> str:
-    if not image_path.exists():
-        return ""
-    return base64.b64encode(image_path.read_bytes()).decode()
-
-
-logo_b64 = image_to_base64(LOGO_PATH)
-cover_b64 = image_to_base64(COVER_PATH)
-
-try:
-    user_config = load_user_config()
-except Exception as exc:
-    st.error(f"Failed to load user configuration: {exc}")
-    st.stop()
-
-latitude = float(user_config["lat"])
-longitude = float(user_config["lon"])
-capacity_kwp = float(user_config["kwp"])
-tilt = float(user_config["tilt"])
-azimuth = float(user_config["azimuth"])
-yield_factor = float(user_config["yield_factor"])
-
-feature_dataset_path = user_config.get(
-    "feature_dataset_path",
-    DEFAULT_FEATURE_DATASET_PATH
-)
-
-load_model_path = user_config.get(
-    "load_model_path",
-    DEFAULT_LOAD_MODEL_PATH
-)
-battery_capacity_kwh = float(user_config["battery_capacity_kwh"])
-initial_soc_kwh = float(user_config["initial_soc_kwh"])
-min_reserve_kwh = float(user_config["min_reserve_kwh"])
-max_charge_kw = float(user_config["max_charge_kw"])
-max_discharge_kw = float(user_config["max_discharge_kw"])
-charge_efficiency = float(user_config["charge_efficiency"])
-discharge_efficiency = float(user_config["discharge_efficiency"])
-
-sell_price_cent_kwh = float(user_config["sell_price_cent_kwh"])
-allow_grid_charging = bool(user_config["allow_grid_charging"])
-grid_charge_price_threshold = float(user_config["grid_charge_price_threshold"])
-cycle_penalty = float(user_config["cycle_penalty"])
-enforce_solar_first_in_lp = bool(user_config["enforce_solar_first_in_lp"])
-terminal_soc_value = float(user_config["terminal_soc_value"])
-min_end_soc_kwh = float(user_config["min_end_soc_kwh"])
 
 def write_temp_solar_config(lat, lon, kwp, tilt, azimuth, yield_factor) -> str:
     config = {
@@ -334,7 +321,6 @@ def prepare_forecast_input(input_df: pd.DataFrame, params: dict) -> pd.DataFrame
     df["utc_timestamp"] = pd.to_datetime(df["utc_timestamp"], utc=True, errors="coerce")
     if df["utc_timestamp"].isna().any():
         raise ValueError("Invalid utc_timestamp values found.")
-
     if df["utc_timestamp"].duplicated().any():
         raise ValueError("Duplicate utc_timestamp rows found.")
 
@@ -366,10 +352,6 @@ def prepare_forecast_input(input_df: pd.DataFrame, params: dict) -> pd.DataFrame
         lower=float(params["soc_min_kwh"]),
         upper=float(params["soc_max_kwh"]),
     )
-
-    for col in ["pv_generation_kwh", "household_load_kwh"]:
-        if (df[col] < 0).any():
-            raise ValueError(f"Column '{col}' must be non-negative.")
 
     expected_step = pd.Timedelta(minutes=int(params["interval_minutes"]))
     step_ok = df["utc_timestamp"].diff().dropna().eq(expected_step).all()
@@ -422,27 +404,22 @@ def run_rule_dispatch(forecast_df: pd.DataFrame, params: dict, initial_soc_kwh: 
         sell_price = float(row.energy_price_sell_cent_kwh)
         interval_soc_min = float(np.clip(getattr(row, "soc_min_dynamic_kwh", soc_min), soc_min, soc_max))
 
-        # 1) PV to load
         pv_to_load_kwh = min(load_remaining, pv_remaining)
         load_remaining -= pv_to_load_kwh
         pv_remaining -= pv_to_load_kwh
 
-        # 2) PV to battery
         charge_headroom_kwh = max(0.0, (soc_max - soc) / eta_c)
         pv_to_battery_kwh = min(pv_remaining, charge_limit_kwh, charge_headroom_kwh)
         soc += pv_to_battery_kwh * eta_c
         pv_remaining -= pv_to_battery_kwh
 
-        # 3) Battery to load
         available_discharge_kwh = max(0.0, (soc - interval_soc_min) * eta_d)
         battery_to_load_kwh = min(load_remaining, discharge_limit_kwh, available_discharge_kwh)
         soc -= battery_to_load_kwh / eta_d
         load_remaining -= battery_to_load_kwh
 
-        # 4) Grid to load
         grid_to_load_kwh = load_remaining
 
-        # 5) Optional grid charging
         charge_limit_left_kwh = max(0.0, charge_limit_kwh - pv_to_battery_kwh)
         charge_headroom_kwh = max(0.0, (soc_max - soc) / eta_c)
         should_grid_charge = (
@@ -453,28 +430,8 @@ def run_rule_dispatch(forecast_df: pd.DataFrame, params: dict, initial_soc_kwh: 
         grid_to_battery_kwh = min(charge_limit_left_kwh, charge_headroom_kwh) if should_grid_charge else 0.0
         soc += grid_to_battery_kwh * eta_c
 
-        # 6) Export remaining PV
         export_to_grid_kwh = pv_remaining
-
         soc = float(np.clip(soc, interval_soc_min, soc_max))
-
-        flow_names = [
-            "pv_to_load",
-            "pv_to_battery",
-            "battery_to_load",
-            "grid_to_load",
-            "grid_to_battery",
-            "export_to_grid",
-        ]
-        flow_vals = [
-            pv_to_load_kwh,
-            pv_to_battery_kwh,
-            battery_to_load_kwh,
-            grid_to_load_kwh,
-            grid_to_battery_kwh,
-            export_to_grid_kwh,
-        ]
-        decision_rule = " | ".join(n for n, v in zip(flow_names, flow_vals) if v > 1e-9) or "idle"
 
         rows.append({
             "utc_timestamp": timestamp,
@@ -490,7 +447,6 @@ def run_rule_dispatch(forecast_df: pd.DataFrame, params: dict, initial_soc_kwh: 
             "export_to_grid_kwh": export_to_grid_kwh,
             "soc_kwh": soc,
             "soc_min_dynamic_kwh": interval_soc_min,
-            "decision_rule": decision_rule,
             "method": "rule_based",
         })
 
@@ -628,7 +584,6 @@ def run_lp_dispatch(forecast_df: pd.DataFrame, params: dict, initial_soc_kwh: fl
     output_df["grid_to_battery_kwh"] = x[idx_gb]
     output_df["export_to_grid_kwh"] = x[idx_ex]
     output_df["soc_kwh"] = x[idx_soc[1:]]
-    output_df["decision_rule"] = "optimizer_lp"
     output_df["method"] = "optimizer_lp"
 
     return _finalize_dispatch_output(output_df, params)
@@ -663,215 +618,181 @@ def run_balance_checks(dispatch_df: pd.DataFrame, params: dict, tolerance: float
     })
 
 
-def summarize_dispatch(df: pd.DataFrame) -> dict:
+def build_validation_scorecard(rule_checks: pd.Series, opt_checks: pd.Series) -> dict:
+    max_balance_error = max(
+        float(rule_checks["max_load_balance_error_kwh"]),
+        float(rule_checks["max_pv_balance_error_kwh"]),
+        float(opt_checks["max_load_balance_error_kwh"]),
+        float(opt_checks["max_pv_balance_error_kwh"]),
+    )
+
+    all_soc_ok = bool(rule_checks["soc_within_bounds"]) and bool(opt_checks["soc_within_bounds"])
+
+    integrity_status = "Validated" if max_balance_error <= 1e-6 and all_soc_ok else "Check Required"
+
     return {
-        "cost_cent": float(df["interval_cost_cent"].sum()),
-        "cost_eur": float(df["interval_cost_cent"].sum() / 100.0),
-        "grid_import_kwh": float(df["total_import_kwh"].sum()),
-        "grid_export_kwh": float(df["total_export_kwh"].sum()),
-        "final_soc_kwh": float(df["soc_kwh"].iloc[-1]),
-        "final_soc_percent": float(df["soc_percent"].iloc[-1]),
-        "pv_to_load_kwh": float(df["pv_to_load_kwh"].sum()),
-        "pv_to_battery_kwh": float(df["pv_to_battery_kwh"].sum()),
-        "battery_to_load_kwh": float(df["battery_to_load_kwh"].sum()),
-        "grid_to_battery_kwh": float(df["grid_to_battery_kwh"].sum()),
-        "export_to_grid_kwh": float(df["export_to_grid_kwh"].sum()),
+        "integrity_status": integrity_status,
+        "max_balance_error_kwh": max_balance_error,
+        "soc_ok": all_soc_ok,
     }
 
 
-def build_recommendation_text(
-    opt_summary: dict,
-    rule_summary: dict,
-    dispatch_df: pd.DataFrame,
-) -> list[str]:
+def build_parameter_groups(
+    planning_date,
+    latitude,
+    longitude,
+    capacity_kwp,
+    tilt,
+    azimuth,
+    yield_factor,
+    battery_capacity_kwh,
+    initial_soc_kwh,
+    min_reserve_kwh,
+    soc_max_kwh,
+    max_charge_kw,
+    max_discharge_kw,
+    charge_efficiency,
+    discharge_efficiency,
+    sell_price_cent_kwh,
+    allow_grid_charging,
+    grid_charge_price_threshold,
+    cycle_penalty,
+    enforce_solar_first_in_lp,
+    terminal_soc_value,
+    min_end_soc_value,
+    feature_dataset_path,
+    load_model_path,
+    last_load_ts,
+):
+    return {
+        "Site & PV System": [
+            ("Planning Date", str(planning_date)),
+            ("Latitude", latitude),
+            ("Longitude", longitude),
+            ("PV Capacity (kWp)", capacity_kwp),
+            ("Panel Tilt (°)", tilt),
+            ("Panel Azimuth (°)", azimuth),
+            ("Yield Factor", yield_factor),
+        ],
+        "Battery & Control Limits": [
+            ("Battery Capacity (kWh)", battery_capacity_kwh),
+            ("Initial SoC (kWh)", initial_soc_kwh),
+            ("Minimum Reserve (kWh)", min_reserve_kwh),
+            ("Maximum Effective SoC (kWh)", soc_max_kwh),
+            ("Max Charge Power (kW)", max_charge_kw),
+            ("Max Discharge Power (kW)", max_discharge_kw),
+            ("Charge Efficiency", charge_efficiency),
+            ("Discharge Efficiency", discharge_efficiency),
+        ],
+        "Economic & Optimization Settings": [
+            ("Default Sell Price (cent/kWh)", sell_price_cent_kwh),
+            ("Allow Grid Charging", allow_grid_charging),
+            ("Grid Charge Threshold (cent/kWh)", grid_charge_price_threshold),
+            ("Cycle Penalty (cent/kWh)", cycle_penalty),
+            ("Enforce Solar First in LP", enforce_solar_first_in_lp),
+            ("Terminal SoC Value (cent/kWh)", terminal_soc_value),
+            ("Minimum End SoC (kWh)", min_end_soc_value),
+        ],
+        "Model Artifacts": [
+            ("Feature Dataset Path", feature_dataset_path),
+            ("Load Model Path", load_model_path),
+            ("Load Baseline Timestamp", str(last_load_ts)),
+        ],
+    }
 
-    saving = rule_summary["cost_eur"] - opt_summary["cost_eur"]
-    final_soc = opt_summary["final_soc_percent"]
 
-    insights = []
-
-    # 1. Economic outcome
-    insights.append(
-        f"Daily cost is reduced by €{saving:.2f} vs. rule-based dispatch."
-    )
-
-    # 2. Battery behavior 
-    if final_soc < 20:
-        insights.append(
-            f"The battery is heavily utilized and ends low ({final_soc:.1f}%), prioritizing cost over reserve."
-        )
-    else:
-        insights.append(
-            f"The battery retains reserve ({final_soc:.1f}%), indicating conservative operation."
-        )
-
-    # 3. System behavior
-    if opt_summary["grid_export_kwh"] > 5:
-       insights.append(
-           f"Significant PV surplus ({opt_summary['grid_export_kwh']:.1f} kWh) is exported, suggesting storage saturation or excess solar generation."
-       )
-    else:
-       insights.append(
-           f"Grid dependency is reduced, with imports lowered relative to the rule-based schedule."
-       )
-
-    return insights
-
-def build_interactive_energy_flow_chart(dispatch_df: pd.DataFrame) -> go.Figure:
-    plot_df = dispatch_df.copy().sort_values("utc_timestamp")
-
-    fig = go.Figure()
-
-    series_config = [
-        ("household_load_kwh", "Household Load", True),
-        ("pv_generation_kwh", "PV Generation", True),
-        ("grid_to_load_kwh", "Grid → Load", True),
-        ("battery_to_load_kwh", "Battery → Load", True),
-        ("pv_to_battery_kwh", "PV → Battery", "legendonly"),
-        ("grid_to_battery_kwh", "Grid → Battery", "legendonly"),
-        ("export_to_grid_kwh", "Export → Grid", "legendonly"),
+def build_validation_bar_chart(rule_checks: pd.Series, opt_checks: pd.Series) -> go.Figure:
+    labels = [
+        "Rule Load Error",
+        "Rule PV Error",
+        "Opt Load Error",
+        "Opt PV Error",
+    ]
+    values = [
+        float(rule_checks["max_load_balance_error_kwh"]),
+        float(rule_checks["max_pv_balance_error_kwh"]),
+        float(opt_checks["max_load_balance_error_kwh"]),
+        float(opt_checks["max_pv_balance_error_kwh"]),
     ]
 
-    for col, label, visible in series_config:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["utc_timestamp"],
-                y=plot_df[col],
-                mode="lines",
-                name=label,
-                visible=visible,
-                line=dict(width=2),
-                hovertemplate=(
-                    "<b>%{fullData.name}</b><br>"
-                    "Time: %{x|%Y-%m-%d %H:%M}<br>"
-                    "Value: %{y:.3f} kWh"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-    start_time = plot_df["utc_timestamp"].min()
-    end_time = plot_df["utc_timestamp"].max()
-
-    fig.update_layout(
-        height=460,
-        margin=dict(l=20, r=20, t=20, b=80),
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.2,
-            xanchor="center",
-            x=0.5,
-            title=None,
-            itemclick="toggle",
-            itemdoubleclick="toggleothers",
-        ),
-        xaxis=dict(
-            title=None,
-            tickformat="%H:%M",
-            showgrid=True,
-            range=[start_time, end_time],
-            dtick=3 * 60 * 60 * 1000,
-        ),
-        yaxis=dict(
-            title="Energy (kWh)",
-            showgrid=True,
-            zeroline=False,
-        ),
-    )
-
-    return fig
-
-def build_soc_chart(dispatch_df: pd.DataFrame, min_reserve_percent: float) -> go.Figure:
-    plot_df = dispatch_df.copy().sort_values("utc_timestamp")
-
     fig = go.Figure()
-
     fig.add_trace(
-        go.Scatter(
-            x=plot_df["utc_timestamp"],
-            y=plot_df["soc_percent"],
-            mode="lines",
-            name="Battery SoC",
-            line=dict(width=3),
-            hovertemplate=(
-                "<b>Battery SoC</b><br>"
-                "Time: %{x|%Y-%m-%d %H:%M}<br>"
-                "SoC: %{y:.1f}%"
-                "<extra></extra>"
-            ),
+        go.Bar(
+            x=labels,
+            y=values,
+            text=[f"{v:.8f}" for v in values],
+            textposition="outside",
+            hovertemplate="<b>%{x}</b><br>Error: %{y:.10f} kWh<extra></extra>",
         )
     )
-
-    fig.add_trace(
-        go.Scatter(
-            x=plot_df["utc_timestamp"],
-            y=[min_reserve_percent] * len(plot_df),
-            mode="lines",
-            name="Minimum Reserve",
-            line=dict(width=2, dash="dash"),
-            hovertemplate=(
-                "<b>Minimum Reserve</b><br>"
-                "Time: %{x|%Y-%m-%d %H:%M}<br>"
-                "Reserve: %{y:.1f}%"
-                "<extra></extra>"
-            ),
-        )
-    )
-
-    final_row = plot_df.iloc[-1]
-    fig.add_trace(
-        go.Scatter(
-            x=[final_row["utc_timestamp"]],
-            y=[final_row["soc_percent"]],
-            mode="markers+text",
-            name="Final SoC",
-            text=[f"{final_row['soc_percent']:.1f}%"],
-            textposition="top center",
-            marker=dict(size=9),
-            hovertemplate=(
-                "<b>Final SoC</b><br>"
-                "Time: %{x|%Y-%m-%d %H:%M}<br>"
-                "SoC: %{y:.1f}%"
-                "<extra></extra>"
-            ),
-        )
-    )
-
-    start_time = plot_df["utc_timestamp"].min()
-    end_time = plot_df["utc_timestamp"].max()
 
     fig.update_layout(
-        height=460,
-        margin=dict(l=20, r=20, t=20, b=80),
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.2,
-            xanchor="center",
-            x=0.5,
-            title=None,
-            itemclick="toggle",
-            itemdoubleclick="toggleothers",
-        ),
-        xaxis=dict(
-            title=None,
-            tickformat="%H:%M",
-            showgrid=True,
-            range=[start_time, end_time],
-            dtick=3 * 60 * 60 * 1000,
-        ),
-        yaxis=dict(
-            title="State of Charge (%)",
-            range=[0, 100],
-            showgrid=True,
-            zeroline=False,
-        ),
+        height=380,
+        margin=dict(l=20, r=20, t=60, b=40),
+        title=dict(text="Energy Balance Validation Errors", x=0.02, xanchor="left", font=dict(size=20)),
+        plot_bgcolor="rgba(255,255,255,0)",
+        paper_bgcolor="rgba(255,255,255,0)",
+        xaxis=dict(showgrid=False),
+        yaxis=dict(title="Absolute Error (kWh)", showgrid=True, gridcolor="rgba(148,163,184,0.20)", zeroline=False),
     )
-
     return fig
+
+
+def build_assumption_cards() -> list[tuple[str, str]]:
+    return [
+        (
+            "Solar Forecast Assumption",
+            "Solar generation is estimated through the project solar utility using online weather-driven forecast data. Forecast quality therefore depends on upstream weather uncertainty."
+        ),
+        (
+            "Electricity Price Assumption",
+            "Electricity buy prices are produced from the project price utility using available market data. Published prices and fallback paths can affect economic realism for the target day."
+        ),
+        (
+            "Load Forecast Assumption",
+            "Household demand is generated from the trained baseline load forecasting model and mapped onto the selected planning date. It is not yet personalized with live user smart-meter feedback."
+        ),
+        (
+            "Optimization Assumption",
+            "The LP optimizer acts on a deterministic day-ahead forecast. It does not yet optimize under uncertainty, intraday corrections, battery degradation physics, or user comfort constraints."
+        ),
+    ]
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+try:
+    user_config = load_user_config()
+except Exception as exc:
+    st.error(f"Failed to load user configuration: {exc}")
+    st.stop()
+
+latitude = float(user_config["lat"])
+longitude = float(user_config["lon"])
+capacity_kwp = float(user_config["kwp"])
+tilt = float(user_config["tilt"])
+azimuth = float(user_config["azimuth"])
+yield_factor = float(user_config["yield_factor"])
+
+feature_dataset_path = user_config.get("feature_dataset_path", DEFAULT_FEATURE_DATASET_PATH)
+load_model_path = user_config.get("load_model_path", DEFAULT_LOAD_MODEL_PATH)
+
+battery_capacity_kwh = float(user_config["battery_capacity_kwh"])
+initial_soc_kwh = float(user_config["initial_soc_kwh"])
+min_reserve_kwh = float(user_config["min_reserve_kwh"])
+max_charge_kw = float(user_config["max_charge_kw"])
+max_discharge_kw = float(user_config["max_discharge_kw"])
+charge_efficiency = float(user_config["charge_efficiency"])
+discharge_efficiency = float(user_config["discharge_efficiency"])
+sell_price_cent_kwh = float(user_config["sell_price_cent_kwh"])
+allow_grid_charging = bool(user_config["allow_grid_charging"])
+grid_charge_price_threshold = float(user_config["grid_charge_price_threshold"])
+cycle_penalty = float(user_config["cycle_penalty"])
+enforce_solar_first_in_lp = bool(user_config["enforce_solar_first_in_lp"])
+terminal_soc_value = float(user_config["terminal_soc_value"])
+min_end_soc_kwh = float(user_config["min_end_soc_kwh"])
+
 
 # =========================================================
 # SIDEBAR
@@ -879,71 +800,9 @@ def build_soc_chart(dispatch_df: pd.DataFrame, min_reserve_percent: float) -> go
 tomorrow_default = pd.Timestamp.now(tz="UTC").date() + timedelta(days=1)
 
 with st.sidebar:
-
     planning_date = st.date_input("Planning Date", value=tomorrow_default)
+    st.caption("This page documents the model setup, operational assumptions, and validation status behind the HEMS outputs.")
 
-    run_button = st.button("🚀 Run Optimization", use_container_width=True)
-
-# =========================================================
-# HERO
-# =========================================================
-
-if cover_b64:
-    st.markdown(
-        f"""
-<div class="hero-cover">
-    <img src="data:image/png;base64,{cover_b64}">
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-hero_logo_html = ""
-if logo_b64:
-    hero_logo_html = f'<img class="brand-logo" src="data:image/png;base64,{logo_b64}" alt="Camelectrix Logo">'
-
-st.markdown(
-    f"""
-<div class="hero-card">
-    <div class="brand-row">
-        {hero_logo_html}
-        <div>
-            <div class="hero-title">Camelectrix – HEMS Control Center</div>
-            <div class="hero-subtitle">
-                Day-ahead energy planning for smart homes using live solar forecast,
-                live electricity price forecast, baseline household load forecasting,
-                and battery dispatch optimization.
-            </div>
-        </div>
-    </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-pill_cols = st.columns(5)
-pill_labels = [
-    "Live Solar Forecast",
-    "Live Price Forecast",
-    "Baseline Load Model",
-    "Rule-Based Dispatch",
-    "LP Cost Optimization",
-]
-
-for col, label in zip(pill_cols, pill_labels):
-    with col:
-        st.markdown(
-            f"""
-<div class="hero-pill" style="text-align:center; width:100%;">
-    {label}
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-if not run_button:
-    st.info("Select the planning date, then run the optimization. System settings are managed from Admin.")
-    st.stop()
 
 # =========================================================
 # PARAMS
@@ -970,6 +829,7 @@ PARAMS = {
     "min_end_soc_kwh": min_end_soc_value,
 }
 
+
 # =========================================================
 # PIPELINE
 # =========================================================
@@ -985,7 +845,6 @@ try:
         yield_factor=yield_factor,
     )
 
-    # solar + price: real day-ahead APIs
     solar_raw = get_daily_solar_kwh(
         target_date=planning_date,
         mode="forecast" if planning_date >= pd.Timestamp.now().date() else "historical",
@@ -1001,7 +860,6 @@ try:
         allow_fallback=True,
     )
 
-    # load: baseline model from notebook-derived artifact
     last_load_ts = get_last_available_load_timestamp(feature_dataset_path)
     load_raw = get_daily_load_forecast(
         forecast_time=last_load_ts,
@@ -1024,207 +882,213 @@ try:
     rule_dispatch_df = run_rule_dispatch(prepared_forecast_df, PARAMS, initial_soc_kwh)
     optimized_dispatch_df = run_lp_dispatch(prepared_forecast_df, PARAMS, initial_soc_kwh)
 
-    rule_summary = summarize_dispatch(rule_dispatch_df)
-    opt_summary = summarize_dispatch(optimized_dispatch_df)
-    savings_eur = rule_summary["cost_eur"] - opt_summary["cost_eur"]
-
     rule_checks = run_balance_checks(rule_dispatch_df, PARAMS)
     opt_checks = run_balance_checks(optimized_dispatch_df, PARAMS)
 
+    validation_summary = build_validation_scorecard(rule_checks, opt_checks)
+
+    parameter_groups = build_parameter_groups(
+        planning_date=planning_date,
+        latitude=latitude,
+        longitude=longitude,
+        capacity_kwp=capacity_kwp,
+        tilt=tilt,
+        azimuth=azimuth,
+        yield_factor=yield_factor,
+        battery_capacity_kwh=battery_capacity_kwh,
+        initial_soc_kwh=initial_soc_kwh,
+        min_reserve_kwh=min_reserve_kwh,
+        soc_max_kwh=soc_max_kwh,
+        max_charge_kw=max_charge_kw,
+        max_discharge_kw=max_discharge_kw,
+        charge_efficiency=charge_efficiency,
+        discharge_efficiency=discharge_efficiency,
+        sell_price_cent_kwh=sell_price_cent_kwh,
+        allow_grid_charging=allow_grid_charging,
+        grid_charge_price_threshold=grid_charge_price_threshold,
+        cycle_penalty=cycle_penalty,
+        enforce_solar_first_in_lp=enforce_solar_first_in_lp,
+        terminal_soc_value=terminal_soc_value,
+        min_end_soc_value=min_end_soc_value,
+        feature_dataset_path=feature_dataset_path,
+        load_model_path=load_model_path,
+        last_load_ts=last_load_ts,
+    )
+
 except Exception as exc:
-    st.error(f"Pipeline execution failed: {exc}")
+    st.error(f"Model and assumptions pipeline failed: {exc}")
     st.stop()
 
-# =========================================================
-# SOURCE STATUS
-# =========================================================
-def source_card(title: str, source_value: str) -> str:
-    if source_value in {"forecast_api", "historical_api", "entsoe_api", "historical_simulation_forecast"}:
-        css = "ok"
-        label = "Connected"
-    elif source_value in {"fallback_model", "not_published", "fallback_unavailable"}:
-        css = "warn"
-        label = "Fallback / Limited"
-    else:
-        css = "warn"
-        label = "Unknown"
-
-    return f"""
-    <div class="glass-card">
-        <div class="section-title">{title}</div>
-        <div class="{css}">{label}</div>
-        <div class="muted" style="margin-top:0.35rem;">{source_value}</div>
-    </div>
-    """
-
-s1, s2, s3 = st.columns(3)
-with s1:
-    st.markdown(source_card("Solar Source", str(solar_raw["source"].iloc[0])), unsafe_allow_html=True)
-with s2:
-    st.markdown(source_card("Price Source", str(price_raw["source"].iloc[0])), unsafe_allow_html=True)
-with s3:
-    st.markdown(source_card("Load Source", str(load_raw["source"].iloc[0])), unsafe_allow_html=True)
-
-st.markdown("")
 
 # =========================================================
-# TOP KPI CARDS
+# HERO
 # =========================================================
-self_sufficiency = 0.0
-if opt_summary["pv_to_load_kwh"] + opt_summary["battery_to_load_kwh"] > 0:
-    self_sufficiency = (
-        (opt_summary["pv_to_load_kwh"] + opt_summary["battery_to_load_kwh"])
-        / max(optimized_dispatch_df["household_load_kwh"].sum(), 1e-9)
-    ) * 100.0
-
-summary1, summary2, summary3, summary4 = st.columns(4)
-
-with summary1:
-    net_cost_eur = float(opt_summary["cost_eur"])
-
-    if net_cost_eur < 0:
-        metric_label = "Net Daily Energy Result"
-        metric_value = f"Net Profit € {abs(net_cost_eur):.2f}"
-    elif net_cost_eur > 0:
-        metric_label = "Net Daily Energy Result"
-        metric_value = f"Net Cost € {net_cost_eur:.2f}"
-    else:
-        metric_label = "Net Daily Energy Result"
-        metric_value = "Break-even € 0.00"
-
-    st.metric(
-        metric_label,
-        metric_value,
-        delta=f"Saved € {savings_eur:.2f}"
-    )
-with summary2:
-    st.metric("Grid Import", f"{opt_summary['grid_import_kwh']:.2f} kWh")
-with summary3:
-    st.metric("Grid Export", f"{opt_summary['grid_export_kwh']:.2f} kWh")
-with summary4:
-    st.metric("Final Battery SoC", f"{opt_summary['final_soc_percent']:.1f}%")
-
-st.markdown("")
-
-overall_status = "Good" if savings_eur > 0 else "Neutral"
-status_color = "#22c55e" if savings_eur > 0 else "#f59e0b"
-
-if opt_summary["final_soc_percent"] < 20:
-    reserve_message = "The schedule prioritizes short-term cost reduction over keeping a high battery reserve."
-else:
-    reserve_message = "The schedule keeps more battery reserve, indicating a more conservative operating strategy."
-
-if opt_summary["grid_export_kwh"] > 5:
-    solar_message = "A large solar surplus remains after local use and battery charging, so excess PV is exported."
-else:
-    solar_message = "Most solar production is absorbed locally through direct consumption or battery charging."
-
 st.markdown(
-    f"""
-<div class="glass-card">
-    <div class="section-title">Overall Outcome</div>
-    <div style="font-size:1.35rem; font-weight:800; color:{status_color}; margin-bottom:0.6rem;">
-        {overall_status} – Cost-Optimized Schedule
+    """
+<div class="hero-card">
+    <div class="hero-title">Model & Assumptions Center</div>
+    <div class="hero-subtitle">
+        This page documents the simulation setup, optimization parameters, data dependencies, and validation checks behind the HEMS outputs.
+        It is the model governance layer of the project: the place where assumptions are made explicit and result credibility is tested.
     </div>
-    <div class="muted" style="line-height:1.7;">
-        The optimizer improves cost performance by <b>€ {savings_eur:.2f}</b> relative to the rule-based schedule.<br>
-        {reserve_message}<br>
-        {solar_message}
+    <div style="margin-top:0.65rem;">
+        <span class="pill">System Configuration</span>
+        <span class="pill">Validation Checks</span>
+        <span class="pill">Operational Assumptions</span>
+        <span class="pill">Model Transparency</span>
     </div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-exec1, exec2, exec3 = st.columns([1.15, 1.15, 1])
 
-with exec1:
+# =========================================================
+# KPI ROW
+# =========================================================
+k1, k2, k3, k4 = st.columns(4)
+
+with k1:
     st.markdown(f"""
-    <div class="glass-card">
-        <div class="section-title">Planning Date</div>
-        <div style="font-size:1.65rem; font-weight:800; color:#0f172a;">{planning_date}</div>
-        <div class="muted" style="margin-top:0.35rem;">24-hour schedule · 96 intervals · 15-minute resolution</div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class="kpi-card">
+    <div class="kpi-label">Validation Status</div>
+    <div class="kpi-value">{validation_summary['integrity_status']}</div>
+    <div class="kpi-sub">Combined balance and constraint check status</div>
+</div>
+""", unsafe_allow_html=True)
 
-with exec2:
+with k2:
     st.markdown(f"""
-    <div class="glass-card">
-        <div class="section-title">Self-Sufficiency</div>
-        <div style="font-size:1.65rem; font-weight:800; color:#0f172a;">{self_sufficiency:.1f}%</div>
-        <div class="muted" style="margin-top:0.35rem;">PV + battery coverage of household demand</div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class="kpi-card">
+    <div class="kpi-label">Maximum Balance Error</div>
+    <div class="kpi-value">{validation_summary['max_balance_error_kwh']:.8f}</div>
+    <div class="kpi-sub">Worst observed load or PV balance deviation (kWh)</div>
+</div>
+""", unsafe_allow_html=True)
 
-economic_label = "Lower-Cost Schedule" if savings_eur > 0 else "Near Baseline"
-economic_css = "ok" if savings_eur > 0 else "warn"
-
-with exec3:
+with k3:
+    soc_label = "Within Bounds" if validation_summary["soc_ok"] else "Out of Bounds"
     st.markdown(f"""
-    <div class="glass-card">
-        <div class="section-title">Optimization Status</div>
-        <div class="{economic_css}" style="font-size:1.25rem;">{economic_label}</div>
-        <div class="muted" style="margin-top:0.35rem;">Savings relative to rule-based dispatch: € {savings_eur:.2f}</div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class="kpi-card">
+    <div class="kpi-label">Battery Constraint Status</div>
+    <div class="kpi-value">{soc_label}</div>
+    <div class="kpi-sub">Rule-based and optimized schedules checked</div>
+</div>
+""", unsafe_allow_html=True)
 
-st.divider()
+with k4:
+    st.markdown(f"""
+<div class="kpi-card">
+    <div class="kpi-label">Planning Horizon</div>
+    <div class="kpi-value">96 Intervals</div>
+    <div class="kpi-sub">24 hours at 15-minute resolution</div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("")
+
 
 # =========================================================
-# TABS
+# VALIDATION SUMMARY
 # =========================================================
-tab1 = st.tabs([
-    "Overview",
-])[0]
+status_css = "ok" if validation_summary["integrity_status"] == "Validated" else "warn"
 
-# =========================================================
-# TAB 1 - OVERVIEW
-# =========================================================
-with tab1:
-    left, right = st.columns([1.25, 1])
-
-    with left:
-        st.subheader("Integrated Energy Flow (Optimized)")
-        energy_flow_fig = build_interactive_energy_flow_chart(optimized_dispatch_df)
-        st.plotly_chart(energy_flow_fig, use_container_width=True)
-
-    with right:
-        st.subheader("Battery SoC")
-        st.caption("Battery charge over the day, including minimum reserve and final state.")
-        soc_chart = build_soc_chart(
-            optimized_dispatch_df,
-            min_reserve_percent=(min_reserve_kwh / battery_capacity_kwh) * 100.0,
-        )
-        st.plotly_chart(soc_chart, use_container_width=True)
-        final_soc = opt_summary["final_soc_percent"]
-        if final_soc < 20:
-            soc_text = "Battery is mostly depleted by the end of the day → cost-optimized behavior."
-        else:
-            soc_text = "Battery retains energy → conservative or reserve-oriented behavior."
-
-        st.markdown(
-        f"<div class='muted' style='margin-top:0.5rem;'>{soc_text}</div>",
-        unsafe_allow_html=True
-        )    
-
-    st.markdown("")
-    st.subheader("What Happened & Why")
-
-    recommendation_html = "".join(
-        f"<li style='margin-bottom:0.75rem;'>{rec}</li>"
-        for rec in build_recommendation_text(opt_summary, rule_summary, optimized_dispatch_df)
-    )
-
-    st.markdown(
-        f"""
+st.markdown(
+    f"""
 <div class="glass-card">
-    <div class="section-title">Interpretation</div>
+    <div class="section-title">Validation Summary</div>
+    <div class="{status_css}" style="font-size:1.18rem; margin-bottom:0.5rem;">{validation_summary['integrity_status']}</div>
     <div class="muted">
-        <ul style="padding-left:1.2rem; margin:0;">
-            {recommendation_html}
-        </ul>
+        The purpose of this layer is to verify that the HEMS outputs are not only visually convincing, but also numerically consistent.
+        Load balance, PV balance, and battery state constraints are checked for both the rule-based baseline and the optimized schedule.
     </div>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+    unsafe_allow_html=True,
+)
+
+st.markdown("")
+
+
+# =========================================================
+# PARAMETER TABLES
+# =========================================================
+left, right = st.columns([1.05, 0.95])
+
+with left:
+    st.subheader("System Configuration")
+    for section_name, rows in parameter_groups.items():
+        st.markdown(
+            f"""
+<div class="glass-card" style="margin-bottom:1rem;">
+    <div class="section-title">{section_name}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        section_df = pd.DataFrame(rows, columns=["Parameter", "Value"])
+        st.dataframe(section_df, use_container_width=True, hide_index=True)
+
+with right:
+    st.subheader("Validation Diagnostics")
+
+    validation_df = pd.DataFrame({
+        "Check": [
+            "Rule-Based Load Balance Error (kWh)",
+            "Rule-Based PV Balance Error (kWh)",
+            "Rule-Based SoC Bounds",
+            "Optimized Load Balance Error (kWh)",
+            "Optimized PV Balance Error (kWh)",
+            "Optimized SoC Bounds",
+        ],
+        "Value": [
+            round(rule_checks["max_load_balance_error_kwh"], 8),
+            round(rule_checks["max_pv_balance_error_kwh"], 8),
+            bool(rule_checks["soc_within_bounds"]),
+            round(opt_checks["max_load_balance_error_kwh"], 8),
+            round(opt_checks["max_pv_balance_error_kwh"], 8),
+            bool(opt_checks["soc_within_bounds"]),
+        ],
+    })
+    st.dataframe(validation_df, use_container_width=True, hide_index=True)
+
+    st.markdown("")
+    val_fig = build_validation_bar_chart(rule_checks, opt_checks)
+    st.plotly_chart(val_fig, use_container_width=True)
+
+st.markdown("")
+
+
+# =========================================================
+# ASSUMPTIONS
+# =========================================================
+st.markdown(
+    """
+<div class="note-card">
+    <div class="section-title">Why This Page Matters</div>
+    <div class="muted">
+        Most dashboards show results but hide assumptions. That is weak engineering. This page exists to expose the assumptions,
+        modeling simplifications, and validation evidence that determine whether the outputs should actually be trusted.
+    </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown("")
+
+cards = build_assumption_cards()
+c1, c2 = st.columns(2)
+c3, c4 = st.columns(2)
+
+for col, (title, text) in zip([c1, c2, c3, c4], cards):
+    with col:
+        st.markdown(
+            f"""
+<div class="insight-box">
+    <div class="insight-title">{title}</div>
+    <div class="insight-text">{text}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )

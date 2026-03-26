@@ -6,5 +6,21 @@
     "azimuth": 0.0,
     "yield_factor": 0.7,
     "feature_dataset_path": "data/input/shifted-date-residential1_feature_engineered_full.csv",
-    "load_model_path": "models/load_forecast_model.pkl"
+    "load_model_path": "models/load_forecast_model.pkl",
+
+    "battery_capacity_kwh": 13.5,
+    "initial_soc_kwh": 6.0,
+    "min_reserve_kwh": 1.35,
+    "max_charge_kw": 5.0,
+    "max_discharge_kw": 5.0,
+    "charge_efficiency": 0.90,
+    "discharge_efficiency": 0.90,
+
+    "sell_price_cent_kwh": 8.0,
+    "allow_grid_charging": true,
+    "grid_charge_price_threshold": 10.0,
+    "cycle_penalty": 0.001,
+    "enforce_solar_first_in_lp": true,
+    "terminal_soc_value": 0.0,
+    "min_end_soc_kwh": 0.0
 }
