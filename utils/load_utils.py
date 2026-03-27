@@ -55,7 +55,7 @@ def _parse_forecast_time(forecast_time: DateTimeLike) -> pd.Timestamp:
 # ------------------------------------------------------------
 
 def load_feature_engineered_dataset(
-    csv_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
+    csv_path: Union[str, Path] = "data/input/shifted-date-residential1_feature_engineered_full.csv",
 ) -> pd.DataFrame:
 
     csv_path = _resolve_path(csv_path)
@@ -160,7 +160,7 @@ def get_daily_load_forecast(
     forecast_time: DateTimeLike,
     household_id: int = 1,
     model_path: Union[str, Path] = "models/load_forecast_model.pkl",
-    feature_dataset_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
+    feature_dataset_path: Union[str, Path] = "data/input/shifted-date-residential1_feature_engineered_full.csv",
 ) -> pd.DataFrame:
     """
     Forecast next 24h using:

@@ -1,76 +1,120 @@
-# importing the data until date(now) and store it in the "data/load_training_dataset.csv"
 from pathlib import Path
 import sys
+import time
+from datetime import datetime
+import pandas as pd
 
+# ---------------------------------
+# Setup paths
+# ---------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
-import pandas as pd
-from datetime import datetime, timezone
-import time
+from utils.dispatch_utils import run_dispatch_pipeline
 from utils.train_module_HH import train_module
+from utils.aggregated_utils import build_aggregated_table
+
+INPUT_FILE = BASE_DIR / "data/input/shifted-date-residential1_feature_engineered_full.csv"
+OUTPUT_FILE = BASE_DIR / "data/load_training_dataset.csv"
+MODEL_DIR = BASE_DIR / "models"
 
 
+# ---------------------------------
+# Data preparation
+# ---------------------------------
+def prepare_data():
+    df = pd.read_csv(INPUT_FILE)
 
-# Input / output paths
-input_file = BASE_DIR / "data/input/shifted-date-residential1_feature_engineered_full.csv"
-output_file = BASE_DIR / "data/load_training_dataset.csv"
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
 
-# Load CSV
-df = pd.read_csv(input_file)
+    now = datetime.now()
 
-# Parse timestamp and remove timezone
-df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+    # round down to nearest 15 min
+    minute = (now.minute // 15) * 15
+    cutoff_time = now.replace(minute=minute, second=0, microsecond=0)
 
-# Get current local time (Germany assumed from system)
-now = datetime.now()
+    df_filtered = df[df["timestamp"] <= cutoff_time]
+    df_filtered.to_csv(OUTPUT_FILE, index=False)
 
-# Round down to nearest 15 minutes (e.g., 11:33 -> 11:30)
-minute = (now.minute // 15) * 15
-cutoff_time = now.replace(minute=minute, second=0, microsecond=0)
-
-# Filter rows up to cutoff
-df_filtered = df[df["timestamp"] <= cutoff_time]
-
-# Save result
-df_filtered.to_csv(output_file, index=False)
-
-print(f"Saved {len(df_filtered)} rows up to {cutoff_time}")
-
-# will output load_forecast_model.pkl in the "models" folder
-trained_module = train_module(
-inputCSVFile=str(input_file),
-outputDirectoryTrainedModule= str(BASE_DIR / "models"))
+    print(f"[DATA] Prepared until {cutoff_time} ({len(df_filtered)} rows)")
+    return cutoff_time
 
 
+# ---------------------------------
+# Training task
+# ---------------------------------
+def run_training():
+    print("[TRAIN] Starting training...")
+
+    prepare_data()
+
+    success = train_module(
+        inputCSVFile=str(OUTPUT_FILE),
+        outputDirectoryTrainedModule=str(MODEL_DIR)
+    )
+
+    if success:
+        print("[TRAIN] Training completed successfully.")
+    else:
+        print("[TRAIN] Training failed.")
+
+    return success
 
 
+# ---------------------------------
+# Forecast task
+# ---------------------------------
+def run_forecast(current_slot):
+    print(f"[FORECAST] Running forecast for {current_slot}")
+    df = build_aggregated_table(start_day='2026-03-20')
+    #input_path = Path('../data/runtime/aggregated_table.csv')
+    #forecast_df = pd.read_csv(input_path)
+
+    INITIAL_SOC_KWH = 5.0  # Replace with measured battery SoC before running
+
+    result_df = run_dispatch_pipeline(
+        forecast_df=df,
+        initial_soc_kwh=INITIAL_SOC_KWH,
+    )
+    # Example Forecast logic (to be implemented):
+    # call function to create aggregated table for forecast
+    # call function to create dispatch table using the aggregated table
+     
+    print("[FORECAST] Done.")
 
 
-# now the "data/load_training_dataset.csv" file contains all the data up to the current date and time, ready for training the model.
-#-----------------------------------------------------------------------------------------------------------------------------------2024-07-20 15:45:00
+# ---------------------------------
+# Main orchestrator loop
+# ---------------------------------
+last_training_day = None
+last_forecast_slot = None
 
-# the main loop to train the model every day at 00:00 and save the model in the "models" folder with the name "load_forecast_model_YYYY-MM-DD_HH-MM-SS.pkl"     
+print("Orchestrator started...\n")
+
 while True:
-    print("Running task...")
+    now = datetime.now()
 
-# --- your logic here ---
+    # ---------------------------------
+    # 1. DAILY TRAINING (once per day)
+    # ---------------------------------
+    #if last_training_day != now.date():
+    #    run_training()
+    #    last_training_day = now.date()
 
-    #append the new data to the existing "data/load_training_dataset.csv" file
-    #load the actual dataset from actuals_[yearmonth].csv
-    #append it to the existing "data/load_training_dataset.csv" file
-    #save the updated dataset to "data/load_training_dataset.csv"
-    #continue with training the model using the updated "data/load_training_dataset.csv" file
+    # ---------------------------------
+    # 2. FORECAST EVERY 15 MINUTES
+    # ---------------------------------
+    current_slot = now.replace(
+        minute=(now.minute // 15) * 15,
+        second=0,
+        microsecond=0
+    )
 
-# will output load_forecast_model.pkl in the "models" folder
-    #trained_module = train_module(
-    #inputCSVFile=str(input_file),
-    #outputDirectoryTrainedModule= str(BASE_DIR / "models"))
+    if last_forecast_slot != current_slot:
+        run_forecast(current_slot)
+        last_forecast_slot = current_slot
 
-    #if not trained_module:
-    #    print("Training failed. Will retry in 24 hours.")
-    #else:
-    #    print("Training succeeded. Model saved.")
-    
-    print("Done. Sleeping for 24 hours...\n")
-    time.sleep(24 * 60 * 60)  # 24 hours
+    # ---------------------------------
+    # Sleep (light polling)
+    # ---------------------------------
+    time.sleep(30)
