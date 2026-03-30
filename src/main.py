@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 
 # ---------------------------------
@@ -13,7 +13,7 @@ sys.path.append(str(BASE_DIR))
 from utils.dispatch_utils import run_dispatch_pipeline
 from utils.train_module_HH import train_module
 from utils.aggregated_utils import build_aggregated_table
-
+from helper_functions import cleanup_old_models
 INPUT_FILE = BASE_DIR / "data/input/shifted-date-residential1_feature_engineered_full.csv"
 OUTPUT_FILE = BASE_DIR / "data/load_training_dataset.csv"
 MODEL_DIR = BASE_DIR / "models"
@@ -52,6 +52,7 @@ def run_training():
         inputCSVFile=str(OUTPUT_FILE),
         outputDirectoryTrainedModule=str(MODEL_DIR)
     )
+    cleanup_old_models(Path("models"), keep_last_n=3)
 
     if success:
         print("[TRAIN] Training completed successfully.")
@@ -66,7 +67,7 @@ def run_training():
 # ---------------------------------
 def run_forecast(current_slot):
     print(f"[FORECAST] Running forecast for {current_slot}")
-    df = build_aggregated_table(start_day='2026-03-20')
+    df = build_aggregated_table()
     #input_path = Path('../data/runtime/aggregated_table.csv')
     #forecast_df = pd.read_csv(input_path)
 
@@ -97,9 +98,18 @@ while True:
     # ---------------------------------
     # 1. DAILY TRAINING (once per day)
     # ---------------------------------
+    # for production, we have to use these lines to run training once per day --------- to be uncommented in production
     #if last_training_day != now.date():
     #    run_training()
     #    last_training_day = now.date()
+    
+    # for testing, we can run training every minute --------- to be removed in production
+    if (
+    last_training_day is None
+    or now - last_training_day >= timedelta(minutes=1)
+    ):
+        run_training()
+        last_training_time = now
 
     # ---------------------------------
     # 2. FORECAST EVERY 15 MINUTES

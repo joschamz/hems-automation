@@ -649,7 +649,7 @@ def _load_system_config(
 
 
 def build_aggregated_table(
-    start_day: "str | Any",
+    start_day: "str | Any" = None,
     output_path: Path = Path(__file__).resolve().parents[1] / "data/runtime/aggregated_table.csv",
     update_interval: pd.Timedelta = pd.Timedelta(minutes=15),
     defaults: Optional[dict[str, float]] = None,
@@ -730,9 +730,13 @@ def build_aggregated_table(
         )
 
     # Normalize start_day to date object
-    start_day = pd.Timestamp(start_day, tz="UTC").date()
+    if start_day is None:
+        start_day = pd.Timestamp.now(tz="UTC").date()
+    else:
+        start_day = pd.Timestamp(start_day, tz="UTC").date()
+    
     now_utc = pd.Timestamp.now(tz="UTC")
-
+    
     # Step 1: Check refresh policy
     should_refresh, refresh_reason = _should_refresh(
         start_day, now_utc, output_path, update_interval

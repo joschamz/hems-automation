@@ -6,12 +6,12 @@ import joblib
 import numpy as np
 import pandas as pd
 import holidays
+from helper_functions import get_latest_model_path
 
 DateTimeLike = Union[str, datetime, pd.Timestamp]
 
 SUPPORTED_HOUSEHOLD_ID = 1
 FORECAST_HORIZON = 96  # 96 x 15 min = 24h
-
 
 # ------------------------------------------------------------
 # Paths
@@ -160,7 +160,7 @@ def get_daily_load_forecast(
     forecast_time: DateTimeLike,
     household_id: int = 1,
     model_path: Union[str, Path] = "models/load_forecast_model.pkl",
-    feature_dataset_path: Union[str, Path] = "data/input/shifted-date-residential1_feature_engineered_full.csv",
+    feature_dataset_path: Union[str, Path] = "data/load_training_dataset.csv",
 ) -> pd.DataFrame:
     """
     Forecast next 24h using:
@@ -180,6 +180,9 @@ def get_daily_load_forecast(
     # --------------------------------------------------------
     # Load model (with feature_cols)
     # --------------------------------------------------------
+    models_dir  = Path("models")
+    model_path = get_latest_model_path(models_dir)
+
     model_path = _resolve_path(model_path)
     bundle = joblib.load(model_path)
 
@@ -193,7 +196,6 @@ def get_daily_load_forecast(
     # Load dataset
     # --------------------------------------------------------
     df_all = load_feature_engineered_dataset(feature_dataset_path)
-
     if forecast_time > df_all.index.max():
         raise ValueError("forecast_time beyond dataset range")
 
