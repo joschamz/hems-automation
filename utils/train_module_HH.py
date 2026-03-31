@@ -166,11 +166,15 @@ def train_module(inputCSVFile, outputDirectoryTrainedModule) -> bool:
         # ----------------------------------------------------
         # 3) Build multi-step targets
         # ----------------------------------------------------
-        horizon = 96  # 24h with 15-min resolution
+        horizon = 192  # 48h with 15-min resolution
 
-        y_multi = pd.DataFrame(index=df.index)
-        for h in range(1, horizon + 1):
-            y_multi[f"target_t+{h}"] = df["load"].shift(-h)
+        y_multi = pd.concat(
+            {
+            f"target_t+{h}": df["load"].shift(-h)
+            for h in range(1, horizon + 1)
+            },
+            axis=1,
+        )
 
         data_multi = pd.concat([df[feature_cols], y_multi], axis=1).dropna()
 
@@ -216,12 +220,12 @@ def train_module(inputCSVFile, outputDirectoryTrainedModule) -> bool:
             "fixed_feature_cols": fixed_feature_cols,
             "weather_feature_cols": weather_feature_cols,
             "horizon": horizon,
+            "forecast_hours": 48,
             "train_start": str(X_multi.index.min()),
             "train_end": str(X_multi.index.max()),
             "n_train_rows": len(X_multi),
             "best_params": best_params,
         }
-
         joblib.dump(bundle, output_model_path)
 
         print(f"Model trained and saved successfully: {output_model_path}")

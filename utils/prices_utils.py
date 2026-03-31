@@ -1,40 +1,35 @@
 """
-prices_utils.py — Day-ahead electricity price utility, modelled after solar_utils.py.
+prices_utils.py — Rolling 48-hour electricity price utility with historical fallback.
 
 Public API
 ----------
 get_daily_prices(
-    target_date=None,       # None → tomorrow; str "YYYY-MM-DD"; date; datetime
-    mode="auto",            # "auto" | "forecast" | "historical"
     secrets_dir="secrets",  # directory containing entsoe_api_key.txt
-    allow_fallback=True,    # when True, return NaN frame instead of raising on API error
-) -> pd.DataFrame           # 96 rows × 15-min UTC intervals for the requested day
+    allow_fallback=True,     # when True, use historical 48h data to fill gaps
+) -> pd.DataFrame            # 192 rows × 15-min UTC intervals starting from now
 
 Output columns
 --------------
-- time           (datetime64, UTC, timezone-aware)   — matches solar_utils.py's `time` column
-- price_eur_mwh  (float)                             — NaN when source != "entsoe_api"
-- price_cent_kwh (float)                             — price_eur_mwh / 10
-- source         (str)  "entsoe_api" | "not_published" | "fallback_unavailable"
+- time           (datetime64, UTC, timezone-aware)
+- price_eur_mwh  (float, never NaN)
+- price_cent_kwh (float, never NaN)  # price_eur_mwh / 10
+- source         (str)  "forecast" | "forecast_shifted" | "historical_shifted" | "fallback_unavailable"
 
-Historical prices are supported — ENTSOE stores day-ahead prices indefinitely.
-The same `query_day_ahead_prices` endpoint handles both past and future dates.
+Window semantics
+----------------
+The returned frame always represents a strict rolling UTC 48-hour window
+starting from the current time rounded down to the nearest 15-minute slot.
 
-Resolution note
----------------
-The returned frame always represents a strict UTC calendar day
-(00:00:00–23:45:00 UTC, 96 rows). Internally, ENTSOE data is market-time
-based, but this utility normalizes and slices to the requested UTC day.
-
-Resolution depends on market/date and ENTSOE data publication. With SDAC
-quarter-MTU go-live, many recent dates (including DE_LU) are available in
-15-minute granularity, while older dates can be hourly. This utility is
-version-compatible with entsoe-py 0.6.x and 0.7.x by trying 15-minute data
-first and falling back to hourly when needed.
+Fallback mechanism (fill priority per slot)
+-------------------------------------------
+1. forecast          — direct API value for this slot
+2. forecast_shifted  — slot filled from day 1 of the forecast (h0-h24 shifted to h24-h48);
+                       only applied to day 2 gaps (day 1 is always covered by historical)
+3. historical_shifted — aligned value from the 48h prior historical window
+4. fallback_unavailable — no data available from any source
 """
 
 import warnings
-from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -49,79 +44,61 @@ from entsoe.exceptions import NoMatchingDataError
 
 DEFAULT_COUNTRY_CODE = "DE_LU"   # Germany-Luxembourg bidding zone
 DEFAULT_TZ = "Europe/Berlin"
-# Compatibility for mixed ENTSOE resolutions and entsoe-py versions:
-# - 0.6.x defaults to 60T unless explicitly passed and can miss post go-live data
-# - 0.7.x deprecates resolution and auto-forces the correct SDAC resolution
 PREFERRED_RESOLUTIONS = ("15T", "60T")
-
-DateLike = Union[str, date, datetime]
+HORIZON_HOURS = 48
+INTERVAL_MINUTES = 15
+INTERVALS_48H = (HORIZON_HOURS * 60) // INTERVAL_MINUTES
+INTERVALS_24H = (24 * 60) // INTERVAL_MINUTES
+HISTORICAL_LOOKBACK_HOURS = 48  # Fetch prior 48h for fallback coverage
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_daily_prices(
-    target_date: Optional[DateLike] = None,
-    mode: str = "auto",
+def get_48h_prices_forecast(
     secrets_dir: Union[str, Path] = "secrets",
     allow_fallback: bool = True,
 ) -> pd.DataFrame:
     """
-    Return one UTC calendar day (24 h) of 15-minute day-ahead electricity prices.
+    Return a rolling UTC 48-hour window of 15-minute day-ahead prices.
+    
+    Fetches all forecast and historical data, then fills any NaN forecast values
+    with aligned historical data, ensuring the output contains no NaN prices.
 
     Parameters
     ----------
-    target_date : None | str "YYYY-MM-DD" | date | datetime
-        UTC day to fetch. ``None`` defaults to *tomorrow in UTC*.
-    mode : {"auto", "forecast", "historical"}
-        ``"auto"`` picks the correct mode by comparing *target_date* to today.
-        ``"forecast"`` is valid only for today or future dates.
-        ``"historical"`` is valid only for past dates.
     secrets_dir : str | Path
         Directory that contains ``entsoe_api_key.txt``.
-        Resolved with the same two-candidate logic as solar_utils.py's config path.
     allow_fallback : bool
-        When ``True`` (default), return a 96-row NaN frame instead of raising
-        if the API call fails or the data has not been published yet.
+        When ``True`` (default), use historical data to fill gaps and return
+        complete data. When ``False``, raise if any NaN would result.
 
     Returns
     -------
     pd.DataFrame
-        96 rows, one per 15-minute interval in UTC for the requested UTC day.
-        First row is always ``00:00:00+00:00``, last row ``23:45:00+00:00``.
-        Columns: ``time``, ``price_eur_mwh``, ``price_cent_kwh``, ``source``.
-        A ``note`` column is appended when the source is not ``"entsoe_api"``.
+        192 rows, one per 15-minute interval in UTC.
+        First row is ``now.floor('15min')`` and last row is ``first + 47h45m``.
+        Columns: ``time``, ``price_eur_mwh``, ``price_cent_kwh``, ``source``, ``note``.
+        - source: "forecast" (direct API), "forecast_shifted" (day 1 repeated into day 2),
+                  "historical_shifted" (48h prior), or "fallback_unavailable".
+        - note: Explanation for non-forecast entries.
     """
-    day = _parse_target_date(target_date)
-    is_forecast = _resolve_mode(day, mode) == "forecast"
+    start_utc = pd.Timestamp.now(tz="UTC").floor(f"{INTERVAL_MINUTES}min")
+    end_utc = start_utc + pd.Timedelta(hours=HORIZON_HOURS)
     api_key = _load_api_key(secrets_dir)
-
-    try:
-        return _fetch_day(day, api_key, DEFAULT_COUNTRY_CODE, DEFAULT_TZ)
-    except NoMatchingDataError as exc:
-        # "not_published" only makes sense for future dates whose D+1 auction
-        # has not run yet.  For historical dates NoMatchingDataError signals a
-        # genuine data gap — surface the real reason via fallback_frame.
-        if is_forecast:
-            warnings.warn(
-                f"Day-ahead prices for {day} have not been published yet. "
-                "ENTSOE typically publishes D+1 prices around 13:00 CET.",
-                UserWarning,
-                stacklevel=2,
-            )
-            return _not_published_frame(day)
-        if not allow_fallback:
-            raise
-        return _fallback_frame(day, exc)
-    except Exception as error:
-        if not allow_fallback:
-            raise
-        return _fallback_frame(day, error)
+    return _fetch_and_fill_window(
+        start_utc,
+        end_utc,
+        api_key,
+        DEFAULT_COUNTRY_CODE,
+        DEFAULT_TZ,
+        allow_fallback=allow_fallback,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — path / config resolution (mirrored from solar_utils.py)
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 def _load_api_key(secrets_dir: Union[str, Path] = "secrets") -> str:
@@ -145,118 +122,172 @@ def _load_api_key(secrets_dir: Union[str, Path] = "secrets") -> str:
     return found.read_text(encoding="utf-8").strip()
 
 
-def _parse_target_date(target_date: Optional[DateLike]) -> date:
-    if target_date is None:
-        return (pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)).date()
-    if isinstance(target_date, datetime):
-        return target_date.date()
-    if isinstance(target_date, date):
-        return target_date
-    if isinstance(target_date, str):
-        try:
-            return datetime.strptime(target_date, "%Y-%m-%d").date()
-        except ValueError as error:
-            raise ValueError("target_date must use YYYY-MM-DD format") from error
-    raise TypeError("target_date must be None, date, datetime, or YYYY-MM-DD string")
-
-
-def _resolve_mode(day: date, mode: str) -> str:
-    normalized = mode.strip().lower()
-    if normalized not in {"auto", "forecast", "historical"}:
-        raise ValueError("mode must be one of: auto, forecast, historical")
-    today = pd.Timestamp.now(tz="UTC").date()
-    if normalized == "auto":
-        return "historical" if day < today else "forecast"
-    if normalized == "forecast" and day < today:
-        raise ValueError("Forecast mode cannot be used for past dates")
-    if normalized == "historical" and day >= today:
-        raise ValueError("Historical mode can only be used for past dates")
-    return normalized
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers — data fetching & normalisation
-# ---------------------------------------------------------------------------
-
-def _fetch_day(
-    day: date,
+def _fetch_and_fill_window(
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
     api_key: str,
     country_code: str = DEFAULT_COUNTRY_CODE,
     tz: str = DEFAULT_TZ,
+    allow_fallback: bool = True,
 ) -> pd.DataFrame:
     """
-    Fetch one UTC calendar day of day-ahead prices and return a 96-row UTC
-    DataFrame. Works for both past (historical) and future (forecast) dates
-    since ENTSOE uses the same endpoint for both.
+    Fetch forecast and historical data, then fill missing forecast values.
+    
+    Three-step process:
+    1. Fetch ALL forecast prices (now to now+48h)
+    2. Fetch ALL historical prices (now-48h to now)
+    3. Fill NaN slots in priority order:
+       a. forecast_shifted — day 1 values (h0-h24) shifted into day 2 (h24-h48) gaps
+       b. historical_shifted — aligned 48h-prior historical values
+    
+    Returns 48h forecast table with source labels and no NaN prices.
     """
     client = EntsoePandasClient(api_key=api_key)
+    target_index = _window_index(start_utc)
 
-    # Query a strict UTC day window and then normalize to 96 UTC 15-min slots.
-    start_utc = pd.Timestamp(day.isoformat(), tz="UTC")
-    end_utc = start_utc + pd.Timedelta(days=1)
+    # STEP 1: Fetch ALL forecast values (now to now+48h)
+    try:
+        raw_forecast = _query_prices_with_resolution_fallback(
+            client,
+            country_code,
+            start_utc,
+            end_utc,
+        )
+        # Remove duplicate timestamps (can occur during DST transitions)
+        raw_forecast = raw_forecast.sort_index()
+        raw_forecast = raw_forecast[~raw_forecast.index.duplicated(keep="first")]
+        forecast_normalized = _normalize_to_15_minute(raw_forecast, target_index, tz)
+    except Exception:
+        if not allow_fallback:
+            raise
+        forecast_normalized = pd.Series(np.nan, index=target_index, dtype=float)
 
-    raw_prices = _query_prices_with_resolution_fallback(
-        client,
-        country_code,
-        start_utc,
-        end_utc,
+    # STEP 2: Fetch ALL historical values (now-48h to now)
+    hist_start_utc = start_utc - pd.Timedelta(hours=HISTORICAL_LOOKBACK_HOURS)
+    hist_target_index = _window_index(hist_start_utc)
+    try:
+        raw_historical = _query_prices_with_resolution_fallback(
+            client,
+            country_code,
+            hist_start_utc,
+            start_utc,
+        )
+        # Remove duplicate timestamps (can occur during DST transitions)
+        raw_historical = raw_historical.sort_index()
+        raw_historical = raw_historical[~raw_historical.index.duplicated(keep="first")]
+        historical_normalized = _normalize_to_15_minute(raw_historical, hist_target_index, tz)
+    except Exception:
+        if not allow_fallback:
+            raise
+        historical_normalized = pd.Series(np.nan, index=hist_target_index, dtype=float)
+    
+    # STEP 3: Fill NaN slots in priority order
+    forecast_mask = forecast_normalized.notna()  # Track original direct forecast values
+
+    # 3a. forecast_shifted: shift day 1 (h0-h24) forward into day 2 (h24-h48) gaps.
+    #     No backward shift: missing day 1 slots are always covered by historical data.
+    forecast_day1_for_day2 = forecast_normalized.shift(INTERVALS_24H)
+    after_forecast_fill = forecast_normalized.where(
+        forecast_normalized.notna(), forecast_day1_for_day2
+    )
+    forecast_shifted_mask = (~forecast_mask) & after_forecast_fill.notna()
+
+    # 3b. historical_shifted: fill remaining NaNs with aligned 48h-prior values.
+    #     Use .values for positional alignment since indices are in different time ranges.
+    resolved = after_forecast_fill.where(
+        after_forecast_fill.notna(), historical_normalized.values
     )
 
-    # Keep one value per timestamp before timezone conversion.
-    raw_prices = raw_prices.sort_index()
-    raw_prices = raw_prices[~raw_prices.index.duplicated(keep="first")]
+    # Determine source labels
+    source = np.where(
+        forecast_mask,
+        "forecast",
+        np.where(
+            forecast_shifted_mask,
+            "forecast_shifted",
+            np.where(
+                resolved.notna(),
+                "historical_shifted",
+                "fallback_unavailable",
+            ),
+        ),
+    )
 
-    # ENTSOE responses are usually timezone-aware. If not, assume market timezone.
-    if raw_prices.index.tz is None:
-        raw_prices.index = raw_prices.index.tz_localize(tz)
-
-    # Normalize to UTC and slice strictly to the requested UTC day window.
-    raw_utc = raw_prices.tz_convert("UTC")
-    day_prices = raw_utc[(raw_utc.index >= start_utc) & (raw_utc.index < end_utc)]
-
-    if day_prices.empty:
-        raise NoMatchingDataError(
-            f"query_day_ahead_prices returned no data for UTC day {day} after filtering to {start_utc} – {end_utc}"
-        )
-
-    normalized = _normalize_to_15_minute(day_prices, start_utc, tz)
-
-    return pd.DataFrame({
-        "time": normalized.index,
-        "price_eur_mwh": np.round(normalized.values, 4),
-        "price_cent_kwh": np.round(normalized.values / 10.0, 4),
-        "source": "entsoe_api",
+    # Build result DataFrame for 48h forecast window
+    result = pd.DataFrame({
+        "time": target_index,
+        "price_eur_mwh": np.round(resolved.values, 4),
+        "price_cent_kwh": np.round(resolved.values / 10.0, 4),
+        "source": source,
     })
+
+    # Add explanatory notes
+    result["note"] = np.where(
+        result["source"] == "forecast_shifted",
+        "Filled from day 1 of the forecast window (hours 0-24 shifted to hours 24-48).",
+        np.where(
+            result["source"] == "historical_shifted",
+            "Filled from historical data (48 hours prior).",
+            np.where(
+                result["source"] == "fallback_unavailable",
+                "No forecast or historical data available.",
+                np.nan,
+            ),
+        ),
+    )
+    result.loc[result["note"].isna(), "note"] = np.nan
+    
+    return result
 
 
 def _normalize_to_15_minute(
     raw_series: pd.Series,
-    start_utc: pd.Timestamp,
+    target_index: pd.DatetimeIndex,
     tz: str = DEFAULT_TZ,
 ) -> pd.Series:
     """
-    Reindex a price Series (hourly or already 15-min) to exactly one UTC-day
-    target (96 slots) using forward-fill — a published price is valid for the
-    whole hour (or quarter) it covers.
+    Reindex a price Series (hourly or 15-min) to the exact rolling 48h
+    target (192 slots) without cross-gap forward filling.
+
+    Hourly API points are expanded to quarter-hour slots within the same hour.
     """
     series = raw_series.copy()
-    # Ensure UTC
     if series.index.tz is None:
         series.index = series.index.tz_localize(tz)
     series.index = series.index.tz_convert("UTC")
 
-    target_index = pd.date_range(
-        start=start_utc,
-        periods=96,
-        freq="15min",
-    )
+    expanded = _expand_series_to_quarter_hour(series)
+    normalized = expanded.reindex(target_index)
+    if normalized.dropna().empty:
+        raise NoMatchingDataError("No usable values after normalization to 15-minute grid")
 
-    # Keep observed points and target slots on one timeline so forward-fill can
-    # propagate each published value across the intervals it is valid for.
-    combined_index = series.index.union(target_index)
-    filled = series.reindex(combined_index).sort_index().ffill().bfill()
+    return normalized
 
-    return filled.reindex(target_index)
+
+def _expand_series_to_quarter_hour(series: pd.Series) -> pd.Series:
+    """
+    Expand hourly ENTSOE series into quarter-hour points for the same hour.
+
+    If the source is already 15-minute data, values are preserved as-is.
+    """
+    if len(series) <= 1:
+        return series
+
+    diffs = series.index.to_series().diff().dropna().dt.total_seconds() / 60.0
+    median_step = float(diffs.median()) if not diffs.empty else INTERVAL_MINUTES
+
+    if median_step <= INTERVAL_MINUTES:
+        return series
+
+    frames = []
+    for offset in (0, 15, 30, 45):
+        shifted = series.copy()
+        shifted.index = shifted.index + pd.Timedelta(minutes=offset)
+        frames.append(shifted)
+
+    expanded = pd.concat(frames).sort_index()
+    expanded = expanded[~expanded.index.duplicated(keep="first")]
+    return expanded
 
 
 def _query_prices_with_resolution_fallback(
@@ -305,49 +336,19 @@ def _query_prices_with_resolution_fallback(
 
 
 # ---------------------------------------------------------------------------
-# Fallback frames (no API data available)
+# Time index helper
 # ---------------------------------------------------------------------------
 
-def _utc_index(day: date) -> pd.DatetimeIndex:
+def _window_index(start_utc: pd.Timestamp) -> pd.DatetimeIndex:
     return pd.date_range(
-        start=pd.Timestamp(day.isoformat(), tz="UTC"),
-        periods=96,
-        freq="15min",
-    )
-
-
-def _nan_price_frame(day: date, source: str, note: str) -> pd.DataFrame:
-    """Build a 96-row UTC NaN-price frame used by fallback paths."""
-    return pd.DataFrame({
-        "time": _utc_index(day),
-        "price_eur_mwh": np.nan,
-        "price_cent_kwh": np.nan,
-        "source": source,
-        "note": note,
-    })
-
-
-def _not_published_frame(day: date) -> pd.DataFrame:
-    """
-    Return a 96-row NaN frame for the requested UTC day when day-ahead prices
-    are not published yet. ENTSOE typically publishes D+1 prices around 13:00 CET.
-    """
-    return _nan_price_frame(
-        day,
-        source="not_published",
-        note="Day-ahead prices for this day have not been published yet.",
-    )
-
-
-def _fallback_frame(day: date, error: Exception) -> pd.DataFrame:
-    """Return a 96-row NaN frame when the ENTSOE API failed or returned no data."""
-    return _nan_price_frame(
-        day,
-        source="fallback_unavailable",
-        note=f"API call failed: {type(error).__name__}: {error}",
+        start=start_utc,
+        periods=INTERVALS_48H,
+        freq=f"{INTERVAL_MINUTES}min",
     )
 
 
 # ---------------------------------------------------------------------------
 
-__all__ = ["get_daily_prices"]
+get_daily_prices = get_48h_prices_forecast
+
+__all__ = ["get_48h_prices_forecast", "get_daily_prices"]

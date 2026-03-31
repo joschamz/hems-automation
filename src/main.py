@@ -10,7 +10,7 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
-from utils.dispatch_utils import run_dispatch_pipeline
+from utils.dispatch_utils import run_dispatch
 from utils.train_module_HH import train_module
 from utils.aggregated_utils import build_aggregated_table
 from helper_functions import cleanup_old_models
@@ -73,10 +73,15 @@ def run_forecast(current_slot):
 
     INITIAL_SOC_KWH = 5.0  # Replace with measured battery SoC before running
 
-    result_df = run_dispatch_pipeline(
-        forecast_df=df,
-        initial_soc_kwh=INITIAL_SOC_KWH,
+    input_path = Path(BASE_DIR / "data/runtime/aggregated_table.csv")
+    ACTUAL_SOC_KWH = 5.0  # Replace with measured battery SoC before running
+    
+    result_df = run_dispatch(
+    actual_soc_kwh=ACTUAL_SOC_KWH,
+    aggregated_csv=input_path,
+    save_output=True,
     )
+    
     # Example Forecast logic (to be implemented):
     # call function to create aggregated table for forecast
     # call function to create dispatch table using the aggregated table
@@ -99,17 +104,10 @@ while True:
     # 1. DAILY TRAINING (once per day)
     # ---------------------------------
     # for production, we have to use these lines to run training once per day --------- to be uncommented in production
-    #if last_training_day != now.date():
-    #    run_training()
-    #    last_training_day = now.date()
+    if last_training_day != now.date():
+         run_training()
+         last_training_day = now.date()
     
-    # for testing, we can run training every minute --------- to be removed in production
-    if (
-    last_training_day is None
-    or now - last_training_day >= timedelta(minutes=1)
-    ):
-        run_training()
-        last_training_time = now
 
     # ---------------------------------
     # 2. FORECAST EVERY 15 MINUTES

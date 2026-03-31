@@ -10,17 +10,9 @@ from scipy.optimize import linprog
 
 PathLike = Union[str, Path]
 
-REQUIRED_INPUT_COLUMNS = [
-    "utc_timestamp",
-    "pv_generation_kwh",
-    "energy_price_buy_cent_kwh",
-    "household_load_kwh",
-]
-
-OPTIONAL_INPUT_COLUMNS = [
-    "energy_price_sell_cent_kwh",
-    "soc_min_dynamic_kwh",
-]
+# Fixed dispatch constants: 48 h horizon at 15-min intervals
+INTERVAL_MINUTES: int = 15
+HORIZON_INTERVALS: int = 192  # 48 h × 4 intervals/h
 
 FLOW_COLUMNS = [
     "grid_to_load_kwh",
@@ -31,81 +23,44 @@ FLOW_COLUMNS = [
     "export_to_grid_kwh",
 ]
 
-OUTPUT_COLUMNS = [
-    "utc_timestamp",
-    "grid_to_load_kwh",
-    "pv_to_load_kwh",
-    "pv_to_battery_kwh",
-    "battery_to_load_kwh",
-    "grid_to_battery_kwh",
-    "export_to_grid_kwh",
-    "soc_kwh",
-    "soc_min_dynamic_kwh",
-    "energy_price_buy_cent_kwh",
-    "energy_price_sell_cent_kwh",
-    "interval_cost_cent",
-    "cumulative_cost_cent",
-    "decision_rule",
-    "method",
-]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_AGGREGATED_CSV = _REPO_ROOT / "data/runtime/aggregated_table.csv"
+_DEFAULT_DISPATCH_CSV = _REPO_ROOT / "data/runtime/dispatch_table.csv"
 
 
-def _resolve_path(path_like: PathLike) -> Path:
-    path = Path(path_like)
-
-    if path.is_absolute():
-        return path
-
-    candidates = [
-        Path.cwd() / path,
-        Path(__file__).resolve().parents[1] / path,
-    ]
-    found = next((candidate for candidate in candidates if candidate.exists()), None)
-    if found is not None:
-        return found
-
-    raise FileNotFoundError(f"Could not find file: {path_like}")
-
-
-def load_dispatch_params(
+def _load_params(
     user_config_path: PathLike = "user_config.json",
     system_config_path: PathLike = "system_config.json",
 ) -> dict[str, Any]:
-    user_config = json.loads(_resolve_path(user_config_path).read_text(encoding="utf-8"))
-    system_config = json.loads(_resolve_path(system_config_path).read_text(encoding="utf-8"))
+    def _resolve(p: PathLike) -> Path:
+        path = Path(p)
+        if path.is_absolute():
+            return path
+        for candidate in (Path.cwd() / path, _REPO_ROOT / path):
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(f"Could not find config file: {p}")
+
+    user_config = json.loads(_resolve(user_config_path).read_text(encoding="utf-8"))
+    system_config = json.loads(_resolve(system_config_path).read_text(encoding="utf-8"))
 
     required_user_keys = [
-        "battery_capacity_kwh",
-        "max_charge_kw",
-        "max_discharge_kw",
-        "charge_efficiency",
-        "discharge_efficiency",
-        "soc_min_kwh",
-        "soc_max_kwh",
+        "battery_capacity_kwh", "max_charge_kw", "max_discharge_kw",
+        "charge_efficiency", "discharge_efficiency", "soc_min_kwh", "soc_max_kwh",
     ]
     required_system_keys = [
-        "interval_minutes",
-        "default_sell_price_cent_kwh",
-        "allow_grid_charging",
-        "grid_charge_price_threshold_cent_kwh",
-        "cycle_penalty_cent_per_kwh",
-        "enforce_solar_first_in_lp",
-        "terminal_soc_value_cent_kwh",
-        "min_end_soc_kwh",
-        "optimization_horizon_hours",
-        "action_horizon_hours",
-        "update_frequency_hours",
+        "default_sell_price_cent_kwh", "allow_grid_charging",
+        "grid_charge_price_threshold_cent_kwh", "cycle_penalty_cent_per_kwh",
+        "enforce_solar_first_in_lp", "terminal_soc_value_cent_kwh", "min_end_soc_kwh",
     ]
-
     missing_user = [k for k in required_user_keys if k not in user_config]
     missing_system = [k for k in required_system_keys if k not in system_config]
     if missing_user or missing_system:
         raise KeyError(
-            f"Missing config keys - user_config: {missing_user}, system_config: {missing_system}"
+            f"Missing config keys — user_config: {missing_user}, system_config: {missing_system}"
         )
 
     return {
-        "interval_minutes": int(system_config["interval_minutes"]),
         "battery_capacity_kwh": float(user_config["battery_capacity_kwh"]),
         "soc_min_kwh": float(user_config["soc_min_kwh"]),
         "soc_max_kwh": float(user_config["soc_max_kwh"]),
@@ -120,166 +75,97 @@ def load_dispatch_params(
         "enforce_solar_first_in_lp": bool(system_config["enforce_solar_first_in_lp"]),
         "terminal_soc_value_cent_kwh": float(system_config["terminal_soc_value_cent_kwh"]),
         "min_end_soc_kwh": (
-            None
-            if system_config["min_end_soc_kwh"] is None
+            None if system_config["min_end_soc_kwh"] is None
             else float(system_config["min_end_soc_kwh"])
         ),
-        "optimization_horizon_hours": int(system_config["optimization_horizon_hours"]),
-        "action_horizon_hours": int(system_config["action_horizon_hours"]),
-        "update_frequency_hours": int(system_config["update_frequency_hours"]),
     }
 
 
-def compute_horizon_intervals(params: dict[str, Any]) -> dict[str, int]:
-    interval_minutes = int(params["interval_minutes"])
-    if interval_minutes <= 0 or 60 % interval_minutes != 0:
-        raise ValueError(f"interval_minutes={interval_minutes} must be a positive divisor of 60.")
+def _load_aggregated_table(csv_path: PathLike) -> pd.DataFrame:
+    required_cols = [
+        "utc_timestamp",
+        "pv_generation_kwh",
+        "energy_price_buy_cent_kwh",
+        "energy_price_sell_cent_kwh",
+        "household_load_kwh",
+    ]
+    df = pd.read_csv(csv_path, usecols=lambda c: c in required_cols)
 
-    intervals_per_hour = 60 // interval_minutes
-    optimization_intervals = int(params["optimization_horizon_hours"] * intervals_per_hour)
-    action_intervals = int(params["action_horizon_hours"] * intervals_per_hour)
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"aggregated_table.csv is missing columns: {missing}")
 
-    return {
-        "interval_minutes": interval_minutes,
-        "intervals_per_hour": intervals_per_hour,
-        "optimization_intervals": optimization_intervals,
-        "action_intervals": action_intervals,
-        "update_frequency_hours": int(params["update_frequency_hours"]),
-    }
-
-
-def prepare_forecast_input(input_df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
-    missing_required = [col for col in REQUIRED_INPUT_COLUMNS if col not in input_df.columns]
-    if missing_required:
-        raise ValueError(f"Missing required input columns: {missing_required}")
-
-    df = input_df.copy()
     df["utc_timestamp"] = pd.to_datetime(df["utc_timestamp"], utc=True, errors="coerce")
     if df["utc_timestamp"].isna().any():
-        bad_rows = df.index[df["utc_timestamp"].isna()].tolist()[:5]
-        raise ValueError(f"Invalid utc_timestamp values at rows: {bad_rows}")
-
+        raise ValueError("aggregated_table.csv contains unparseable utc_timestamp values.")
     if df["utc_timestamp"].duplicated().any():
-        duplicate_count = int(df["utc_timestamp"].duplicated().sum())
-        raise ValueError(f"Found {duplicate_count} duplicate utc_timestamp rows.")
+        raise ValueError(f"aggregated_table.csv has {df['utc_timestamp'].duplicated().sum()} duplicate timestamps.")
 
     df = df.sort_values("utc_timestamp").reset_index(drop=True)
 
-    numeric_cols = [
-        "pv_generation_kwh",
-        "energy_price_buy_cent_kwh",
-        "household_load_kwh",
-    ]
-    for col in numeric_cols:
+    for col in ["pv_generation_kwh", "energy_price_buy_cent_kwh", "energy_price_sell_cent_kwh", "household_load_kwh"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
         if df[col].isna().any():
-            raise ValueError(f"Column '{col}' contains NaN after numeric conversion.")
+            raise ValueError(f"Column '{col}' contains NaN values.")
 
-    if "energy_price_sell_cent_kwh" not in df.columns:
-        df["energy_price_sell_cent_kwh"] = params["default_sell_price_cent_kwh"]
-    else:
-        df["energy_price_sell_cent_kwh"] = pd.to_numeric(df["energy_price_sell_cent_kwh"], errors="coerce")
-        df["energy_price_sell_cent_kwh"] = df["energy_price_sell_cent_kwh"].fillna(
-            params["default_sell_price_cent_kwh"]
-        )
+    for col in ["pv_generation_kwh", "household_load_kwh"]:
+        if (df[col] < 0).any():
+            raise ValueError(f"Column '{col}' must be non-negative. Found min={df[col].min()}")
 
-    if "soc_min_dynamic_kwh" not in df.columns:
-        df["soc_min_dynamic_kwh"] = float(params["soc_min_kwh"])
-    else:
-        df["soc_min_dynamic_kwh"] = pd.to_numeric(df["soc_min_dynamic_kwh"], errors="coerce")
-        df["soc_min_dynamic_kwh"] = df["soc_min_dynamic_kwh"].fillna(float(params["soc_min_kwh"]))
-
-    df["soc_min_dynamic_kwh"] = df["soc_min_dynamic_kwh"].clip(
-        lower=float(params["soc_min_kwh"]),
-        upper=float(params["soc_max_kwh"]),
-    )
-
-    for non_negative_col in ["pv_generation_kwh", "household_load_kwh"]:
-        if (df[non_negative_col] < 0).any():
-            min_value = float(df[non_negative_col].min())
-            raise ValueError(
-                f"Column '{non_negative_col}' must be non-negative. Found min={min_value}"
-            )
-
-    if df.empty:
-        raise ValueError("Input table is empty.")
-
-    horizon = compute_horizon_intervals(params)
-    min_required = horizon["optimization_intervals"]
-    if len(df) < min_required:
+    if len(df) < HORIZON_INTERVALS:
         raise ValueError(
-            f"Input forecast must cover at least {params['optimization_horizon_hours']}h ({min_required} rows). "
-            f"Got {len(df)} rows. The full optimization horizon is always required even though only "
-            f"{params['action_horizon_hours']}h are actioned."
+            f"aggregated_table.csv must have at least {HORIZON_INTERVALS} rows (48 h at 15 min). Got {len(df)}."
         )
 
-    expected_step = pd.Timedelta(minutes=horizon["interval_minutes"])
+    expected_step = pd.Timedelta(minutes=INTERVAL_MINUTES)
     wrong_step = df["utc_timestamp"].diff().dropna() != expected_step
     if wrong_step.any():
-        wrong_positions = wrong_step[wrong_step].index.tolist()[:5]
-        raise ValueError(
-            f"Timestamp spacing is not {horizon['interval_minutes']}-minute UTC at positions: {wrong_positions}"
-        )
+        bad = wrong_step[wrong_step].index.tolist()[:5]
+        raise ValueError(f"Timestamp spacing is not 15-min UTC at positions: {bad}")
 
-    return df
+    return df.iloc[:HORIZON_INTERVALS].reset_index(drop=True)
 
 
-def validate_initial_soc(initial_soc_kwh: float, params: dict[str, Any], tolerance: float = 1e-9) -> None:
-    soc_min = float(params["soc_min_kwh"])
-    soc_max = float(params["soc_max_kwh"])
-    if not (soc_min - tolerance <= float(initial_soc_kwh) <= soc_max + tolerance):
-        raise ValueError(
-            f"initial_soc_kwh={initial_soc_kwh} is outside [{soc_min}, {soc_max}]"
-        )
-
-
-def finalize_dispatch_output(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
-    cycle_penalty = float(params.get("cycle_penalty_cent_per_kwh", 0.0))
-    output = df.copy()
-    output["soc_percent"] = (output["soc_kwh"] / float(params["battery_capacity_kwh"])) * 100.0
-    pv_used = output["pv_to_load_kwh"] + output["pv_to_battery_kwh"] + output["export_to_grid_kwh"]
-    output["curtailed_pv_kwh"] = np.maximum(0.0, output["pv_generation_kwh"] - pv_used)
-    output["total_import_kwh"] = output["grid_to_load_kwh"] + output["grid_to_battery_kwh"]
-    output["total_export_kwh"] = output["export_to_grid_kwh"]
-    output["interval_cost_cent"] = (
-        output["energy_price_buy_cent_kwh"] * output["total_import_kwh"]
-        - output["energy_price_sell_cent_kwh"] * output["total_export_kwh"]
-        + cycle_penalty
-        * (
-            output["pv_to_battery_kwh"]
-            + output["grid_to_battery_kwh"]
-            + output["battery_to_load_kwh"]
-        )
+def _finalize_dispatch_output(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
+    cycle_penalty = float(params["cycle_penalty_cent_per_kwh"])
+    out = df.copy()
+    out["soc_percent"] = (out["soc_kwh"] / float(params["battery_capacity_kwh"])) * 100.0
+    pv_used = out["pv_to_load_kwh"] + out["pv_to_battery_kwh"] + out["export_to_grid_kwh"]
+    out["curtailed_pv_kwh"] = np.maximum(0.0, out["pv_generation_kwh"] - pv_used)
+    out["total_import_kwh"] = out["grid_to_load_kwh"] + out["grid_to_battery_kwh"]
+    out["total_export_kwh"] = out["export_to_grid_kwh"]
+    out["interval_cost_cent"] = (
+        out["energy_price_buy_cent_kwh"] * out["total_import_kwh"]
+        - out["energy_price_sell_cent_kwh"] * out["total_export_kwh"]
+        + cycle_penalty * (out["pv_to_battery_kwh"] + out["grid_to_battery_kwh"] + out["battery_to_load_kwh"])
     )
-    output["cumulative_cost_cent"] = output["interval_cost_cent"].cumsum()
-    return output
+    out["cumulative_cost_cent"] = out["interval_cost_cent"].cumsum()
+    return out
 
 
 def run_rule_based_dispatch(
     forecast_df: pd.DataFrame,
     params: dict[str, Any],
-    initial_soc_kwh: float,
+    actual_soc_kwh: float,
 ) -> pd.DataFrame:
-    dt_hours = params["interval_minutes"] / 60.0
+    dt_hours = INTERVAL_MINUTES / 60.0
     charge_limit_kwh = params["max_charge_kw"] * dt_hours
     discharge_limit_kwh = params["max_discharge_kw"] * dt_hours
     eta_c = params["charge_efficiency"]
     eta_d = params["discharge_efficiency"]
     soc_min = params["soc_min_kwh"]
     soc_max = params["soc_max_kwh"]
-    allow_grid_charging = bool(params.get("allow_grid_charging", False))
-    grid_charge_threshold = params.get("grid_charge_price_threshold_cent_kwh")
+    allow_grid_charging = bool(params["allow_grid_charging"])
+    grid_charge_threshold = params["grid_charge_price_threshold_cent_kwh"]
 
-    soc = float(initial_soc_kwh)
+    soc = float(actual_soc_kwh)
     rows: list[dict[str, Any]] = []
 
     for row in forecast_df.itertuples(index=False):
-        timestamp = row.utc_timestamp
         load_remaining = float(row.household_load_kwh)
         pv_remaining = float(row.pv_generation_kwh)
         buy_price = float(row.energy_price_buy_cent_kwh)
         sell_price = float(row.energy_price_sell_cent_kwh)
-        interval_soc_min = float(np.clip(getattr(row, "soc_min_dynamic_kwh", soc_min), soc_min, soc_max))
 
         pv_to_load_kwh = min(load_remaining, pv_remaining)
         load_remaining -= pv_to_load_kwh
@@ -290,7 +176,7 @@ def run_rule_based_dispatch(
         soc += pv_to_battery_kwh * eta_c
         pv_remaining -= pv_to_battery_kwh
 
-        available_discharge_kwh = max(0.0, (soc - interval_soc_min) * eta_d)
+        available_discharge_kwh = max(0.0, (soc - soc_min) * eta_d)
         battery_to_load_kwh = min(load_remaining, discharge_limit_kwh, available_discharge_kwh)
         soc -= battery_to_load_kwh / eta_d
         load_remaining -= battery_to_load_kwh
@@ -299,98 +185,68 @@ def run_rule_based_dispatch(
 
         charge_limit_left_kwh = max(0.0, charge_limit_kwh - pv_to_battery_kwh)
         charge_headroom_kwh = max(0.0, (soc_max - soc) / eta_c)
-        should_grid_charge = (
-            allow_grid_charging
-            and grid_charge_threshold is not None
-            and buy_price <= float(grid_charge_threshold)
-        )
+        should_grid_charge = allow_grid_charging and buy_price <= float(grid_charge_threshold)
         grid_to_battery_kwh = min(charge_limit_left_kwh, charge_headroom_kwh) if should_grid_charge else 0.0
         soc += grid_to_battery_kwh * eta_c
 
         export_to_grid_kwh = pv_remaining
 
-        if soc < interval_soc_min - 1e-6 or soc > soc_max + 1e-6:
+        if soc < soc_min - 1e-6 or soc > soc_max + 1e-6:
             raise ValueError(
-                f"SoC out of bounds at {timestamp}: soc={soc:.6f}, bounds=[{interval_soc_min}, {soc_max}]"
+                f"SoC out of bounds at {row.utc_timestamp}: soc={soc:.6f}, bounds=[{soc_min}, {soc_max}]"
             )
-        soc = float(np.clip(soc, interval_soc_min, soc_max))
+        soc = float(np.clip(soc, soc_min, soc_max))
 
-        flow_names = [
-            "pv_to_load",
-            "pv_to_battery",
-            "battery_to_load",
-            "grid_to_load",
-            "grid_to_battery",
-            "export_to_grid",
-        ]
-        flow_vals = [
-            pv_to_load_kwh,
-            pv_to_battery_kwh,
-            battery_to_load_kwh,
-            grid_to_load_kwh,
-            grid_to_battery_kwh,
-            export_to_grid_kwh,
-        ]
+        flow_names = ["pv_to_load", "pv_to_battery", "battery_to_load", "grid_to_load", "grid_to_battery", "export_to_grid"]
+        flow_vals = [pv_to_load_kwh, pv_to_battery_kwh, battery_to_load_kwh, grid_to_load_kwh, grid_to_battery_kwh, export_to_grid_kwh]
         decision_rule = " | ".join(n for n, v in zip(flow_names, flow_vals) if v > 1e-9) or "idle"
 
-        rows.append(
-            {
-                "utc_timestamp": timestamp,
-                "pv_generation_kwh": row.pv_generation_kwh,
-                "household_load_kwh": row.household_load_kwh,
-                "energy_price_buy_cent_kwh": buy_price,
-                "energy_price_sell_cent_kwh": sell_price,
-                "grid_to_load_kwh": grid_to_load_kwh,
-                "pv_to_load_kwh": pv_to_load_kwh,
-                "pv_to_battery_kwh": pv_to_battery_kwh,
-                "battery_to_load_kwh": battery_to_load_kwh,
-                "grid_to_battery_kwh": grid_to_battery_kwh,
-                "export_to_grid_kwh": export_to_grid_kwh,
-                "soc_kwh": soc,
-                "soc_min_dynamic_kwh": interval_soc_min,
-                "decision_rule": decision_rule,
-                "method": "rule_based",
-            }
-        )
+        rows.append({
+            "utc_timestamp": row.utc_timestamp,
+            "pv_generation_kwh": row.pv_generation_kwh,
+            "household_load_kwh": row.household_load_kwh,
+            "energy_price_buy_cent_kwh": buy_price,
+            "energy_price_sell_cent_kwh": sell_price,
+            "grid_to_load_kwh": grid_to_load_kwh,
+            "pv_to_load_kwh": pv_to_load_kwh,
+            "pv_to_battery_kwh": pv_to_battery_kwh,
+            "battery_to_load_kwh": battery_to_load_kwh,
+            "grid_to_battery_kwh": grid_to_battery_kwh,
+            "export_to_grid_kwh": export_to_grid_kwh,
+            "soc_kwh": soc,
+            "decision_rule": decision_rule,
+            "method": "rule_based",
+        })
 
-    return finalize_dispatch_output(pd.DataFrame(rows), params)
+    return _finalize_dispatch_output(pd.DataFrame(rows), params)
 
 
 def run_lp_dispatch(
     forecast_df: pd.DataFrame,
     params: dict[str, Any],
-    initial_soc_kwh: float,
+    actual_soc_kwh: float,
     enforce_solar_first: bool | None = None,
 ) -> pd.DataFrame:
     n = len(forecast_df)
-    dt_hours = params["interval_minutes"] / 60.0
+    dt_hours = INTERVAL_MINUTES / 60.0
     charge_limit_kwh = params["max_charge_kw"] * dt_hours
     discharge_limit_kwh = params["max_discharge_kw"] * dt_hours
-
     eta_c = float(params["charge_efficiency"])
     eta_d = float(params["discharge_efficiency"])
     soc_min = float(params["soc_min_kwh"])
     soc_max = float(params["soc_max_kwh"])
-
-    validate_initial_soc(initial_soc_kwh, params)
+    cycle_penalty = float(params["cycle_penalty_cent_per_kwh"])
+    terminal_soc_value = float(params["terminal_soc_value_cent_kwh"])
+    min_end_soc_kwh = params["min_end_soc_kwh"]
+    if enforce_solar_first is None:
+        enforce_solar_first = bool(params["enforce_solar_first_in_lp"])
 
     load = forecast_df["household_load_kwh"].to_numpy(dtype=float)
     pv = forecast_df["pv_generation_kwh"].to_numpy(dtype=float)
     buy = forecast_df["energy_price_buy_cent_kwh"].to_numpy(dtype=float)
     sell = forecast_df["energy_price_sell_cent_kwh"].to_numpy(dtype=float)
 
-    if "soc_min_dynamic_kwh" in forecast_df.columns:
-        soc_min_dynamic = forecast_df["soc_min_dynamic_kwh"].to_numpy(dtype=float)
-    else:
-        soc_min_dynamic = np.full(shape=n, fill_value=soc_min, dtype=float)
-    soc_min_dynamic = np.clip(soc_min_dynamic, soc_min, soc_max)
-
-    cycle_penalty = float(params.get("cycle_penalty_cent_per_kwh", 0.0))
-    if enforce_solar_first is None:
-        enforce_solar_first = bool(params.get("enforce_solar_first_in_lp", True))
-    terminal_soc_value = float(params.get("terminal_soc_value_cent_kwh", 0.0))
-    min_end_soc_kwh = params.get("min_end_soc_kwh")
-
+    # Variable index blocks: gl, pl, pb, bl, gb, ex, soc (n+1)
     idx_gl = np.arange(0, n)
     idx_pl = np.arange(n, 2 * n)
     idx_pb = np.arange(2 * n, 3 * n)
@@ -409,14 +265,10 @@ def run_lp_dispatch(
     c[idx_bl] += cycle_penalty
     c[idx_soc[-1]] -= terminal_soc_value
 
-    a_eq_rows = []
-    b_eq = []
-
+    a_eq_rows, b_eq = [], []
     for t in range(n):
         row = np.zeros(num_vars, dtype=float)
-        row[idx_gl[t]] = 1.0
-        row[idx_pl[t]] = 1.0
-        row[idx_bl[t]] = 1.0
+        row[idx_gl[t]] = row[idx_pl[t]] = row[idx_bl[t]] = 1.0
         a_eq_rows.append(row)
         b_eq.append(load[t])
 
@@ -429,102 +281,68 @@ def run_lp_dispatch(
         a_eq_rows.append(row)
         b_eq.append(0.0)
 
-    a_ub_rows = []
-    b_ub = []
-
+    a_ub_rows, b_ub = [], []
     for t in range(n):
         row = np.zeros(num_vars, dtype=float)
-        row[idx_pl[t]] = 1.0
-        row[idx_pb[t]] = 1.0
-        row[idx_ex[t]] = 1.0
+        row[idx_pl[t]] = row[idx_pb[t]] = row[idx_ex[t]] = 1.0
         a_ub_rows.append(row)
         b_ub.append(pv[t])
 
         row = np.zeros(num_vars, dtype=float)
-        row[idx_pb[t]] = 1.0
-        row[idx_gb[t]] = 1.0
+        row[idx_pb[t]] = row[idx_gb[t]] = 1.0
         a_ub_rows.append(row)
         b_ub.append(charge_limit_kwh)
 
     if enforce_solar_first:
         for t in range(n):
             row = np.zeros(num_vars, dtype=float)
-            row[idx_gl[t]] = 1.0
-            row[idx_bl[t]] = 1.0
+            row[idx_gl[t]] = row[idx_bl[t]] = 1.0
             a_ub_rows.append(row)
             b_ub.append(max(0.0, load[t] - pv[t]))
 
     bounds = [(0.0, None)] * num_vars
-    for idx in idx_pb:
-        bounds[idx] = (0.0, charge_limit_kwh)
-    for idx in idx_bl:
-        bounds[idx] = (0.0, discharge_limit_kwh)
-    for idx in idx_gb:
-        bounds[idx] = (0.0, charge_limit_kwh)
-
-    bounds[idx_soc[0]] = (float(initial_soc_kwh), float(initial_soc_kwh))
+    for i in idx_pb:
+        bounds[i] = (0.0, charge_limit_kwh)
+    for i in idx_bl:
+        bounds[i] = (0.0, discharge_limit_kwh)
+    for i in idx_gb:
+        bounds[i] = (0.0, charge_limit_kwh)
+    bounds[idx_soc[0]] = (float(actual_soc_kwh), float(actual_soc_kwh))
     for t in range(n):
-        bounds[idx_soc[t + 1]] = (float(soc_min_dynamic[t]), soc_max)
+        bounds[idx_soc[t + 1]] = (soc_min, soc_max)
 
     if min_end_soc_kwh is not None:
-        min_end_soc = float(min_end_soc_kwh)
-        if min_end_soc > soc_max:
-            raise ValueError(f"min_end_soc_kwh={min_end_soc} exceeds soc_max_kwh={soc_max}.")
-        min_end_soc = max(soc_min, min_end_soc)
-        current_lb, current_ub = bounds[idx_soc[-1]]
-        bounds[idx_soc[-1]] = (max(current_lb, min_end_soc), current_ub)
+        min_end = max(soc_min, float(min_end_soc_kwh))
+        if min_end > soc_max:
+            raise ValueError(f"min_end_soc_kwh={min_end} exceeds soc_max_kwh={soc_max}.")
+        lb, ub = bounds[idx_soc[-1]]
+        bounds[idx_soc[-1]] = (max(lb, min_end), ub)
 
     result = linprog(
         c=c,
-        A_ub=np.array(a_ub_rows, dtype=float) if a_ub_rows else None,
-        b_ub=np.array(b_ub, dtype=float) if b_ub else None,
+        A_ub=np.array(a_ub_rows, dtype=float),
+        b_ub=np.array(b_ub, dtype=float),
         A_eq=np.array(a_eq_rows, dtype=float),
         b_eq=np.array(b_eq, dtype=float),
         bounds=bounds,
         method="highs",
     )
-
     if not result.success:
         raise RuntimeError(f"LP optimization failed: {result.message}")
 
     x = result.x
-    output_df = forecast_df.copy()
-    output_df["grid_to_load_kwh"] = x[idx_gl]
-    output_df["pv_to_load_kwh"] = x[idx_pl]
-    output_df["pv_to_battery_kwh"] = x[idx_pb]
-    output_df["battery_to_load_kwh"] = x[idx_bl]
-    output_df["grid_to_battery_kwh"] = x[idx_gb]
-    output_df["export_to_grid_kwh"] = x[idx_ex]
-    output_df["soc_kwh"] = x[idx_soc[1:]]
-    output_df["soc_min_dynamic_kwh"] = soc_min_dynamic
-    output_df["decision_rule"] = "optimizer_lp"
-    output_df["method"] = "lp_optimized"
+    out = forecast_df.copy()
+    out["grid_to_load_kwh"] = x[idx_gl]
+    out["pv_to_load_kwh"] = x[idx_pl]
+    out["pv_to_battery_kwh"] = x[idx_pb]
+    out["battery_to_load_kwh"] = x[idx_bl]
+    out["grid_to_battery_kwh"] = x[idx_gb]
+    out["export_to_grid_kwh"] = x[idx_ex]
+    out["soc_kwh"] = x[idx_soc[1:]]
+    out["decision_rule"] = "optimizer_lp"
+    out["method"] = "lp_optimized"
 
-    return finalize_dispatch_output(output_df, params)
-
-
-def add_rule_activity_columns(df: pd.DataFrame, tolerance: float = 1e-9) -> pd.DataFrame:
-    output = df.copy()
-
-    output["rule_pv_to_load"] = output["pv_to_load_kwh"] > tolerance
-    output["rule_pv_to_battery"] = output["pv_to_battery_kwh"] > tolerance
-    output["rule_battery_to_load"] = output["battery_to_load_kwh"] > tolerance
-    output["rule_grid_to_load"] = output["grid_to_load_kwh"] > tolerance
-    output["rule_grid_to_battery"] = output["grid_to_battery_kwh"] > tolerance
-    output["rule_export_to_grid"] = output["export_to_grid_kwh"] > tolerance
-
-    flow_rule_cols = [
-        "rule_pv_to_load",
-        "rule_pv_to_battery",
-        "rule_battery_to_load",
-        "rule_grid_to_load",
-        "rule_grid_to_battery",
-        "rule_export_to_grid",
-    ]
-    output["rule_idle"] = ~output[flow_rule_cols].any(axis=1)
-    output["rule_optimizer_lp"] = output["method"].eq("lp_optimized")
-
-    return output
+    return _finalize_dispatch_output(out, params)
 
 
 def run_balance_checks(
@@ -552,132 +370,81 @@ def run_balance_checks(
         float(params["soc_max_kwh"]) + tolerance,
     ).all()
 
-    return pd.Series(
-        {
-            "window_rows": len(dispatch_df),
-            "max_load_balance_error_kwh": float(load_balance_error),
-            "max_pv_balance_error_kwh": float(pv_balance_error),
-            "soc_within_bounds": bool(soc_ok),
-        }
-    )
+    return pd.Series({
+        "window_rows": len(dispatch_df),
+        "max_load_balance_error_kwh": float(load_balance_error),
+        "max_pv_balance_error_kwh": float(pv_balance_error),
+        "soc_within_bounds": bool(soc_ok),
+    })
 
 
-def slice_to_action_window(df_full: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
-    horizon = compute_horizon_intervals(params)
-    action_intervals = horizon["action_intervals"]
-    return df_full.iloc[:action_intervals].copy().reset_index(drop=True)
-
-
-def run_dispatch_pipeline(
-    forecast_df: pd.DataFrame,
-    initial_soc_kwh: float,
+def run_dispatch(
+    actual_soc_kwh: float,
+    aggregated_csv: PathLike = _DEFAULT_AGGREGATED_CSV,
     user_config_path: PathLike = "user_config.json",
     system_config_path: PathLike = "system_config.json",
     enforce_solar_first: bool | None = None,
-    output_path: Path = Path(__file__).resolve().parents[1] / "data/runtime/dispatch_table.csv",
+    output_path: PathLike = _DEFAULT_DISPATCH_CSV,
     save_output: bool = True,
 ) -> pd.DataFrame:
-    params = load_dispatch_params(
-        user_config_path=user_config_path,
-        system_config_path=system_config_path,
-    )
-    prepared_forecast_df = prepare_forecast_input(forecast_df, params)
-    validate_initial_soc(initial_soc_kwh, params)
+    params = _load_params(user_config_path, system_config_path)
 
-    horizon = compute_horizon_intervals(params)
-    optimization_intervals = horizon["optimization_intervals"]
-    optimization_df = prepared_forecast_df.iloc[:optimization_intervals].copy().reset_index(drop=True)
+    soc_min = float(params["soc_min_kwh"])
+    soc_max = float(params["soc_max_kwh"])
+    if not (soc_min - 1e-9 <= float(actual_soc_kwh) <= soc_max + 1e-9):
+        raise ValueError(f"actual_soc_kwh={actual_soc_kwh} is outside [{soc_min}, {soc_max}]")
 
-    rule_df = run_rule_based_dispatch(
-        forecast_df=optimization_df,
-        params=params,
-        initial_soc_kwh=initial_soc_kwh,
-    )
-    lp_df = run_lp_dispatch(
-        forecast_df=optimization_df,
-        params=params,
-        initial_soc_kwh=initial_soc_kwh,
-        enforce_solar_first=enforce_solar_first,
-    )
+    forecast_df = _load_aggregated_table(aggregated_csv)
 
-    rule_action_df = slice_to_action_window(rule_df, params)
-    lp_action_df = slice_to_action_window(lp_df, params)
+    rule_df = run_rule_based_dispatch(forecast_df, params, actual_soc_kwh)
+    lp_df = run_lp_dispatch(forecast_df, params, actual_soc_kwh, enforce_solar_first)
 
-    rule_action_df = add_rule_activity_columns(rule_action_df)
-    lp_action_df = add_rule_activity_columns(lp_action_df)
-
-    # Prepare columns to merge
-    cols_to_merge = FLOW_COLUMNS + ["soc_kwh", "interval_cost_cent", "cumulative_cost_cent", "decision_rule"] + [
-        "rule_pv_to_load", "rule_pv_to_battery", "rule_battery_to_load",
-        "rule_grid_to_load", "rule_grid_to_battery", "rule_export_to_grid", "rule_idle", "rule_optimizer_lp"
+    cols_to_merge = FLOW_COLUMNS + [
+        "soc_kwh", "interval_cost_cent", "cumulative_cost_cent", "decision_rule",
     ]
-    
-    # Rename method columns with suffixes
-    rule_merge = rule_action_df[["utc_timestamp"] + cols_to_merge].copy()
-    lp_merge = lp_action_df[["utc_timestamp"] + cols_to_merge].copy()
-    
-    rule_merge_cols = {col: f"{col}_rule_based" for col in cols_to_merge}
-    rule_merge.rename(columns=rule_merge_cols, inplace=True)
-    
-    lp_merge_cols = {col: f"{col}_lp_optimized" for col in cols_to_merge}
-    lp_merge.rename(columns=lp_merge_cols, inplace=True)
-    
-    # Merge on timestamp
+    # Add boolean activity flags directly
+    for df in (rule_df, lp_df):
+        for col in FLOW_COLUMNS:
+            df[f"rule_{col.replace('_kwh', '')}"] = df[col] > 1e-9
+        flow_flag_cols = [f"rule_{c.replace('_kwh', '')}" for c in FLOW_COLUMNS]
+        df["rule_idle"] = ~df[flow_flag_cols].any(axis=1)
+        df["rule_optimizer_lp"] = df["method"].eq("lp_optimized")
+
+    flag_cols = [f"rule_{c.replace('_kwh', '')}" for c in FLOW_COLUMNS] + ["rule_idle", "rule_optimizer_lp"]
+    cols_to_merge = cols_to_merge + flag_cols
+
+    rule_merge = rule_df[["utc_timestamp"] + cols_to_merge].rename(columns={c: f"{c}_rule_based" for c in cols_to_merge})
+    lp_merge = lp_df[["utc_timestamp"] + cols_to_merge].rename(columns={c: f"{c}_lp_optimized" for c in cols_to_merge})
+
     combined_df = rule_merge.merge(lp_merge, on="utc_timestamp", how="inner")
-    
-    # Add back input columns
     combined_df = combined_df.merge(
-        prepared_forecast_df[["utc_timestamp", "pv_generation_kwh", "household_load_kwh", 
-                             "energy_price_buy_cent_kwh", "energy_price_sell_cent_kwh", "soc_min_dynamic_kwh"]],
+        forecast_df[["utc_timestamp", "pv_generation_kwh", "household_load_kwh",
+                     "energy_price_buy_cent_kwh", "energy_price_sell_cent_kwh"]],
         on="utc_timestamp",
-        how="left"
+        how="left",
     )
-    
-    # Reorder columns: timestamp first, then inputs, then rule-based, then LP
-    input_cols = ["utc_timestamp", "pv_generation_kwh", "household_load_kwh", 
-                  "energy_price_buy_cent_kwh", "energy_price_sell_cent_kwh", "soc_min_dynamic_kwh"]
+
+    input_cols = ["utc_timestamp", "pv_generation_kwh", "household_load_kwh",
+                  "energy_price_buy_cent_kwh", "energy_price_sell_cent_kwh"]
     rule_cols = [c for c in combined_df.columns if c.endswith("_rule_based")]
     lp_cols = [c for c in combined_df.columns if c.endswith("_lp_optimized")]
-    
-    final_col_order = input_cols + rule_cols + lp_cols
-    combined_df = combined_df[final_col_order]
-    
-    result_df = combined_df.reset_index(drop=True)
-    
-    # Optionally persist to CSV
+    result_df = combined_df[input_cols + rule_cols + lp_cols].reset_index(drop=True)
+
     if save_output:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        result_df.to_csv(output_path, index=False)
-        print(f"✓ Saved dispatch output to: {output_path.resolve()}")
-    
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        result_df.to_csv(out, index=False)
+        print(f"✓ Saved dispatch output to: {out.resolve()}")
+
     return result_df
 
 
 __all__ = [
-    "REQUIRED_INPUT_COLUMNS",
-    "OPTIONAL_INPUT_COLUMNS",
     "FLOW_COLUMNS",
-    "OUTPUT_COLUMNS",
-    "load_dispatch_params",
-    "compute_horizon_intervals",
-    "prepare_forecast_input",
-    "validate_initial_soc",
-    "finalize_dispatch_output",
+    "INTERVAL_MINUTES",
+    "HORIZON_INTERVALS",
     "run_rule_based_dispatch",
     "run_lp_dispatch",
-    "add_rule_activity_columns",
     "run_balance_checks",
-    "slice_to_action_window",
-    "run_dispatch_pipeline",
+    "run_dispatch",
 ]
- #Example usage in main.py:
-# input_path = Path('../data/runtime/aggregated_table.csv')
-# forecast_df = pd.read_csv(input_path)
-
-# INITIAL_SOC_KWH = 5.0  # Replace with measured battery SoC before running
-
-# result_df = run_dispatch_pipeline(
-#     forecast_df=forecast_df,
-#     initial_soc_kwh=INITIAL_SOC_KWH,
-# )
