@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 import re
+import pandas as pd
 
 def cleanup_old_models(models_dir: Path, keep_last_n: int = 3):
     """
@@ -66,3 +67,52 @@ def get_latest_model_path(models_dir: Path) -> Path:
     candidates.sort(key=lambda x: x[0], reverse=True)
 
     return candidates[0][1]
+
+def save_history(df: pd.DataFrame, history_path: Path) -> None:
+    """
+    Append only new timestamps from df into history CSV.
+
+    Assumes df contains column 'utc_timestamp'.
+    """
+
+    if df.empty:
+        print("No data to save.")
+        return
+
+    # ensure correct dtype
+    df = df.copy()
+    df["utc_timestamp"] = pd.to_datetime(df["utc_timestamp"], utc=True)
+
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- first run ---
+    if not history_path.exists():
+        df.to_csv(history_path, index=False)
+        print(f"[HISTORY] Created new history file with {len(df)} rows.")
+        return
+
+    # --- load only timestamps (efficient) ---
+    existing = pd.read_csv(
+        history_path,
+        usecols=["utc_timestamp"],
+        parse_dates=["utc_timestamp"]
+    )
+
+    last_ts = existing["utc_timestamp"].max()
+
+    # --- filter only new rows ---
+    new_rows = df[df["utc_timestamp"] > last_ts]
+
+    if new_rows.empty:
+        print("[HISTORY] No new rows to append.")
+        return
+
+    # --- append ---
+    new_rows.to_csv(
+        history_path,
+        mode="a",
+        header=False,
+        index=False,
+    )
+
+    print(f"[HISTORY] Appended {len(new_rows)} new rows.")

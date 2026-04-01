@@ -33,6 +33,7 @@ from utils.solar_utils import get_daily_solar_kwh
 
 SYSTEM_CONFIG_PATH = Path(__file__).resolve().parents[1] / "system_config.json"
 _SYSTEM_CONFIG = json.loads(SYSTEM_CONFIG_PATH.read_text(encoding="utf-8"))
+history_path = Path(__file__).resolve().parents[1] / "data/history/history_aggregated_table.csv"
 
 INTERVAL_MINUTES = int(_SYSTEM_CONFIG["interval_minutes"])
 HOURS_PER_HORIZON = int(_SYSTEM_CONFIG["optimization_horizon_hours"])
@@ -258,8 +259,39 @@ def build_aggregated_table(
     df_final = df_final[OUTPUT_COLUMNS]
 
     if save_output:
+        # --- runtime snapshot (overwrite) ---
         output_path.parent.mkdir(parents=True, exist_ok=True)
         df_final.to_csv(output_path, index=False)
+
+        # --- history append (ONLY NEW ROWS) ---
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if history_path.exists():
+            existing = pd.read_csv(history_path, parse_dates=["utc_timestamp"])
+
+            # ensure same dtype
+            df_final["utc_timestamp"] = pd.to_datetime(df_final["utc_timestamp"], utc=True)
+
+            existing_times = set(existing["utc_timestamp"])
+
+            # 🔥 filter only new timestamps
+            new_rows = df_final[~df_final["utc_timestamp"].isin(existing_times)]
+
+            if not new_rows.empty:
+                new_rows.to_csv(
+                    history_path,
+                    mode="a",
+                    header=False,
+                    index=False,
+                )
+                print(f"Appended {len(new_rows)} new rows to history.")
+            else:
+                print("No new timestamps to append.")
+
+        else:
+            # first run → write full file
+            df_final.to_csv(history_path, index=False)
+            print("Created history file with initial data.")
 
     return df_final
 

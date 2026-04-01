@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
 # C extensions
 *.so
 
@@ -134,6 +133,9 @@ dmypy.json
 
 # vscode Stuff
 .vscode
+
+# model
+/models/*
 
 # Data 
 # 1. Ignore everything inside the /data folder
