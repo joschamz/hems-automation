@@ -6,12 +6,12 @@ import joblib
 import numpy as np
 import pandas as pd
 import holidays
+from helper_functions import get_latest_model_path
 
 DateTimeLike = Union[str, datetime, pd.Timestamp]
 
 SUPPORTED_HOUSEHOLD_ID = 1
-FORECAST_HORIZON = 96  # 96 x 15 min = 24h
-
+FORECAST_HORIZON = 192  # 192 x 15 min = 48h
 
 # ------------------------------------------------------------
 # Paths
@@ -55,7 +55,7 @@ def _parse_forecast_time(forecast_time: DateTimeLike) -> pd.Timestamp:
 # ------------------------------------------------------------
 
 def load_feature_engineered_dataset(
-    csv_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
+    csv_path: Union[str, Path]
 ) -> pd.DataFrame:
 
     csv_path = _resolve_path(csv_path)
@@ -89,7 +89,7 @@ def _build_feature_row_from_dataset(
         raise ValueError("Dataset must contain 'load' column")
 
     if forecast_time not in df_all.index:
-        raise ValueError(f"forecast_time {forecast_time} not found in dataset index")
+        forecast_time = df_all.index[df_all.index <= forecast_time].max()
 
     # --------------------------------------------------------
     # Historical load (ONLY before forecast_time)
@@ -160,10 +160,10 @@ def get_daily_load_forecast(
     forecast_time: DateTimeLike,
     household_id: int = 1,
     model_path: Union[str, Path] = "models/load_forecast_model.pkl",
-    feature_dataset_path: Union[str, Path] = "data/shifted-date-residential1_feature_engineered_full.csv",
+    feature_dataset_path: Union[str, Path] = "data/load_training_dataset.csv",
 ) -> pd.DataFrame:
     """
-    Forecast next 24h using:
+    Forecast next 48h using:
     - historical load (from dataset)
     - weather (already stored in dataset)
 
@@ -180,6 +180,9 @@ def get_daily_load_forecast(
     # --------------------------------------------------------
     # Load model (with feature_cols)
     # --------------------------------------------------------
+    models_dir  = Path("models")
+    model_path = get_latest_model_path(models_dir)
+
     model_path = _resolve_path(model_path)
     bundle = joblib.load(model_path)
 
@@ -193,7 +196,6 @@ def get_daily_load_forecast(
     # Load dataset
     # --------------------------------------------------------
     df_all = load_feature_engineered_dataset(feature_dataset_path)
-
     if forecast_time > df_all.index.max():
         raise ValueError("forecast_time beyond dataset range")
 
@@ -211,9 +213,21 @@ def get_daily_load_forecast(
     # --------------------------------------------------------
     y_pred = model.predict(X_latest).flatten()
 
+    # 🔥 get horizon from model
+    horizon = bundle.get("horizon", len(y_pred))
+
+    # safety check
+    if len(y_pred) != horizon:
+        raise ValueError(
+            f"Model output size mismatch: expected {horizon}, got {len(y_pred)}"
+        )
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+    start_time = now_utc.floor("15min")
+    
     future_times = pd.date_range(
-        start=forecast_time,
-        periods=FORECAST_HORIZON,
+        start=start_time,   # NOT forecast_time (important!)
+        periods=horizon,
         freq="15min",
         tz="UTC",
     )
