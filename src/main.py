@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
@@ -20,6 +21,9 @@ INPUT_FILE = BASE_DIR / "data/input/shifted-date-residential1_feature_engineered
 OUTPUT_FILE = BASE_DIR / "data/load_training_dataset.csv"
 MODEL_DIR = BASE_DIR / "models"
 history_path = BASE_DIR / "data/history/history_dispatch_table.csv"
+aggregated_path = BASE_DIR / "data/runtime/aggregated_table.csv"
+dispatch_path = BASE_DIR / "data/runtime/dispatch_table.csv"
+streamlit_app = BASE_DIR / "01_Plan.py"
 
 
 
@@ -110,8 +114,39 @@ def run_forecast(current_slot):
 # ---------------------------------
 last_training_day = None
 last_forecast_slot = None
+streamlit_started = False
 
 print("Orchestrator started...\n")
+
+# ---------------------------------
+# Initial bootstrap (create first files)
+# ---------------------------------
+# Fixed start date (April 18) with the current local time.
+current_time = datetime.now()
+start_time = current_time.replace(year=2026, month=4, day=18)
+
+now = start_time
+current_slot = now.replace(
+    minute=(now.minute // 15) * 15,
+    second=0,
+    microsecond=0
+)
+
+training_ok = run_training()
+if training_ok:
+    run_forecast(current_slot)
+    last_training_day = now.date()
+    last_forecast_slot = current_slot
+
+if OUTPUT_FILE.exists() and aggregated_path.exists() and dispatch_path.exists():
+    subprocess.Popen(
+        [sys.executable, "-m", "streamlit", "run", str(streamlit_app)],
+        cwd=str(BASE_DIR),
+    )
+    streamlit_started = True
+    print("[UI] Streamlit server started on 01_Plan.py")
+else:
+    print("[UI] Streamlit not started yet (waiting for first output files).")
 
 while True:
     now = datetime.now()
@@ -137,6 +172,14 @@ while True:
     if last_forecast_slot != current_slot:
         run_forecast(current_slot)
         last_forecast_slot = current_slot
+
+    if (not streamlit_started) and OUTPUT_FILE.exists() and aggregated_path.exists() and dispatch_path.exists():
+        subprocess.Popen(
+            [sys.executable, "-m", "streamlit", "run", str(streamlit_app)],
+            cwd=str(BASE_DIR),
+        )
+        streamlit_started = True
+        print("[UI] Streamlit server started on 01_Plan.py")
 
     # ---------------------------------
     # Sleep (light polling)
