@@ -7,6 +7,8 @@
 
 # Home Energy Management System (HEMS) Automation
 
+**Contributors:** Joscha Metz, Mokhalad Abdulqader, Mehdi Zamani
+
 > **Capstone Project** — The central thesis of this project is simple: **you cannot optimize what you cannot predict**. A home battery system without forecasting can only react to the present — charging when the sun shines now, discharging when prices are high now. This system instead looks 48 hours ahead, combining machine-learned load predictions, solar irradiance forecasts, and real day-ahead electricity prices to solve for the globally optimal charge/discharge schedule via linear programming. The result is an energy flow that is simultaneously more **financially profitable** (minimizing grid cost through price arbitrage) and more **climate-friendly** (maximizing self-consumption of renewable solar energy and reducing grid dependency).
 
 ---
@@ -59,64 +61,9 @@ The interactive dashboard demonstrates:
 
 ## System Architecture
 
-```
-  Raw Load Data (CSV)
-        │
-        ▼
-  Feature Engineering
-  (timestamp slicing,
-   cutoff to current time)
-        │
-        ▼
-  LightGBM Training          ← runs once per day
-  (multi-output regression,
-   household load forecast)
-        │
-        ▼
-  48-Hour Load Forecast
-        │
-        ├──────────────────────────────────────────────┐
-        │                                              │
-        ▼                                              ▼
-  Solar Forecast                           Day-Ahead Prices
-  (Open-Meteo API,                         (ENTSOE Transparency API,
-   clear-sky fallback)                      DE_LU bidding zone)
-        │                                              │
-        └──────────────┬───────────────────────────────┘
-                       ▼
-          Aggregated Forecast Table
-          (192 rows × 15-min UTC,
-           load + solar + prices)
-                       │
-                       ▼
-          ┌────────────────────────────┐
-          │   Dispatch Optimization    │
-          │  ───────────────────────   │
-          │  LP (linprog):             │
-          │   minimize grid cost       │
-          │   subject to SoC bounds,   │
-          │   charge/discharge limits, │
-          │   and energy balance       │
-          │                            │
-          │  Rule-based baseline       │
-          │   (threshold heuristic)    │
-          └────────────────────────────┘
-                       │
-                       ▼
-          Dispatch Table + History
-          (runtime/ and history/)
-                       │
-                       ▼
-          Streamlit Dashboard
-          ┌──────────────────────────────────────────┐
-          │  01_Plan         │  Energy Story         │
-          │  (48h schedule,  │  (flow narrative,     │
-          │   KPIs, charts)  │   animated bars)      │
-          ├──────────────────┴───────────────────────┤
-          │  System Center (config, artifact health, │
-          │  data browser)                           │
-          └──────────────────────────────────────────┘
-```
+
+
+![System Architecture](images/SystemArchitecture.png)
 
 ---
 
