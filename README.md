@@ -11,6 +11,17 @@
 
 > **Capstone Project** — The central thesis of this project is simple: **you cannot optimize what you cannot predict**. A home battery system without forecasting can only react to the present — charging when the sun shines now, discharging when prices are high now. This system instead looks 48 hours ahead, combining machine-learned load predictions, solar irradiance forecasts, and real day-ahead electricity prices to solve for the globally optimal charge/discharge schedule via linear programming. The result is an energy flow that is simultaneously more **financially profitable** (minimizing grid cost through price arbitrage) and more **climate-friendly** (maximizing self-consumption of renewable solar energy and reducing grid dependency).
 
+## Inhaltsangabe
+
+- [Dashboard Demo](#dashboard-demo)
+- [System Architecture](#system-architecture)
+- [Quick Start](#quick-start)
+- [Process Lifecycle & Artifacts](#process-lifecycle--artifacts)
+- [Data Science Methods](#data-science-methods)
+- [Dashboard Guide](#dashboard-guide)
+- [Notebooks](#notebooks)
+- [Reproducibility & Limitations](#reproducibility--limitations)
+
 ---
 
 ## Dashboard Demo
@@ -183,10 +194,12 @@ From then on, the forecast and dispatch steps repeat every 15 minutes in a conti
 
 ### Load Forecasting
 
-- **Feature engineering**: timestamp features (hour, day-of-week, month), lag features, and rolling statistics are pre-computed offline into `shifted-date-residential1_feature_engineered_full.csv`.
-- **Model**: LightGBM multi-output gradient boosting regressor trained on historical household consumption at 15-minute resolution.
-- **Inference horizon**: 48 hours (192 slots) from the current 15-minute boundary, rolled forward every cycle.
-- **Retraining**: The model is retrained once per calendar day using all available data up to the current timestamp, and old model files are pruned (keeping the 3 most recent).
+- **Model architecture**: the production forecaster is a direct multi-step model built as `MultiOutputRegressor(LGBMRegressor(...))`. Instead of predicting one step recursively, it predicts the full 48-hour horizon directly as 192 quarter-hour targets (`target_t+1` to `target_t+192`).
+- **Core input features**: the model combines calendar features (`hour`, `day_of_week`, `month`, `is_weekend`, `is_holiday`), historical load lags (`lag_1`, `lag_2`, `lag_3`, `lag_96`, `lag_192`), short-term deltas, and rolling statistics (`rolling_mean_1h`, `rolling_mean_24h`, `rolling_std_1h`). This gives the model both immediate recency and daily-pattern context.
+- **Weather data in the model**: weather is not just used for solar forecasting; it is also part of the load-forecast feature vector. The training pipeline includes 25 Open-Meteo variables such as temperature, humidity, dew point, apparent temperature, precipitation, cloud cover, pressure, wind, and radiation features including `shortwave_radiation`, `direct_radiation`, `diffuse_radiation`, and `global_tilted_irradiance`. Historical timestamps are filled from the Open-Meteo archive API, future timestamps from the forecast API, and hourly values are interpolated onto the 15-minute UTC household calendar. The weather utility can also derive extra signals like heating/cooling degree terms and rain flags, but the current production trainer uses the raw weather columns listed in `weather_feature_cols`.
+- **Metrics used during model development**: the modeling notebook evaluates validation **MAE** and **RMSE** on the flattened 48-hour forecast output and also inspects **MAE per forecast horizon step**. It additionally compares feature sets and baseline model families before settling on the LightGBM-based multi-output approach. The daily production orchestrator currently retrains and saves the model, but it does not yet persist or display these validation metrics during each loop iteration.
+- **How hyperparameters were chosen**: hyperparameter tuning was done offline in `notebooks/household_load-trained_model.ipynb`, where candidate LightGBM settings are tested over a search space covering `n_estimators`, `learning_rate`, `num_leaves`, `max_depth`, `min_child_samples`, `subsample`, `colsample_bytree`, `reg_alpha`, and `reg_lambda`, then ranked by validation RMSE/MAE. The looped production training does **not** rerun that search every 15-minute cycle or every daily retrain. Instead, it reuses one fixed parameter set that was selected from those experiments: `n_estimators=200`, `learning_rate=0.03`, `num_leaves=127`, `max_depth=5`, `min_child_samples=50`, `subsample=0.9`, `colsample_bytree=0.7`, `reg_alpha=0.0`, `reg_lambda=0.1`.
+- **Retraining behaviour**: the model is retrained once per calendar day using all data available up to the current timestamp, then the three most recent model files are retained. In other words, the loop updates model weights on newly available history, but the model class and tuned hyperparameters remain fixed unless changed manually in code.
 
 ### Solar & Price Forecasting
 
