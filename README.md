@@ -11,7 +11,7 @@
 
 > **Capstone Project** — The central thesis of this project is simple: **you cannot optimize what you cannot predict**. A home battery system without forecasting can only react to the present — charging when the sun shines now, discharging when prices are high now. This system instead looks 48 hours ahead, combining machine-learned load predictions, solar irradiance forecasts, and real day-ahead electricity prices to solve for the globally optimal charge/discharge schedule via linear programming. The result is an energy flow that is simultaneously more **financially profitable** (minimizing grid cost through price arbitrage) and more **climate-friendly** (maximizing self-consumption of renewable solar energy and reducing grid dependency).
 
-## Inhaltsangabe
+## Table of Contents
 
 - [Dashboard Demo](#dashboard-demo)
 - [System Architecture](#system-architecture)
