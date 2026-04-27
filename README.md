@@ -16,6 +16,7 @@
 - [Dashboard Demo](#dashboard-demo)
 - [System Architecture](#system-architecture)
 - [Quick Start](#quick-start)
+- [Contributing & Security](#contributing--security)
 - [Process Lifecycle & Artifacts](#process-lifecycle--artifacts)
 - [Data Science Methods](#data-science-methods)
 - [Dashboard Guide](#dashboard-guide)
@@ -173,6 +174,12 @@ The orchestrator:
 From then on, the forecast and dispatch steps repeat every 15 minutes in a continuous loop.
 
 > Development-only (dashboard without retraining): `streamlit run 01_Plan.py`
+
+## Contributing & Security
+
+- Contribution process and development expectations: `CONTRIBUTING.md`
+- Responsible vulnerability reporting: `SECURITY.md`
+- Keep real credentials out of git history: store API keys only in local ignored files like `secrets/entsoe_api_key.txt`.
 
 ---
 
