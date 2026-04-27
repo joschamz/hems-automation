@@ -1,4 +1,3 @@
-[![CI/CD Pipeline](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml)
 ![Dashboard](https://img.shields.io/badge/Dashboard-Streamlit-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)
 ![ML Model](https://img.shields.io/badge/ML%20Model-LightGBM-yellow?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PC9zdmc+)
