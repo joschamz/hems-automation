@@ -1,4 +1,4 @@
-[![CI/CD Pipeline](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/[...]
+[![CI/CD Pipeline](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml)
 ![Dashboard](https://img.shields.io/badge/Dashboard-Streamlit-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)
 ![ML Model](https://img.shields.io/badge/ML%20Model-LightGBM-yellow?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PC9zdmc+)
@@ -35,7 +35,7 @@ Most home battery systems operate on simple rules: charge when solar is availabl
 - Without a solar forecast, the system cannot decide whether to store energy now or wait for tomorrow's stronger irradiance.
 - Without day-ahead prices, arbitrage — buying cheap, selling or avoiding expensive grid energy — is impossible.
 
-By combining all three forecasts into a single 48-hour horizon and solving a linear program over it, the system finds the schedule that **minimizes electricity cost and maximizes solar self-consum[...] 
+By combining all three forecasts into a single 48-hour horizon and solving a linear program over it, the system finds the schedule that **minimizes electricity cost and maximizes solar self-consum[...]
 
 The dashboard makes this optimization transparent and inspectable:
 - **When should the battery charge or discharge?** → Solved globally across 192 slots, not slot-by-slot
@@ -288,4 +288,3 @@ jupyter lab
 - **Prototype scope**: This project is a capstone demonstration of the full ML + optimization + UI pipeline. It is not hardened for unattended production operation.
 
 ---
-
