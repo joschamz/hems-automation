@@ -3,9 +3,9 @@ name: Test in different OS
 # === Events ===
 on:
   workflow_dispatch: {}   # manual trigger (no inputs)
-  # push:
-  #   branches: [ main ]
-  #   paths: [ requirements.txt ]
+  push:
+    branches: [ main ]
+    paths: [ requirements.txt, pyproject.toml, src/**, utils/**, notebooks/**, .github/workflows/workflow-02.yml ]
 
 permissions:
   contents: read

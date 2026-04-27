@@ -2,6 +2,7 @@ import json
 import base64
 from pathlib import Path
 from datetime import date
+from textwrap import dedent
 
 import numpy as np
 import pandas as pd
@@ -675,34 +676,38 @@ if logo_b64:
     hero_logo_html = f'<img class="brand-logo" src="data:image/png;base64,{logo_b64}" alt="Logo">'
 
 st.markdown(
-    f"""
+    dedent(
+        f"""
 <div class="hero-card">
-    <div class="brand-row">
-        {hero_logo_html}
-        <div>
-            <div class="hero-title">Energy Story</div>
-            <div class="hero-subtitle">
-                A simplified view of what solar produced, how the battery helped, and how much surplus was exported.
-            </div>
-            <div>
-                <span class="hero-pill">Solar Role</span>
-                <span class="hero-pill">Battery Role</span>
-                <span class="hero-pill">Export Story</span>
-            </div>
-        </div>
-    </div>
+<div class="brand-row">
+{hero_logo_html}
+<div>
+<div class="hero-title">Energy Story</div>
+<div class="hero-subtitle">
+A simplified view of what solar produced, how the battery helped, and how much surplus was exported.
 </div>
-""",
+<div>
+<span class="hero-pill">Solar Role</span>
+<span class="hero-pill">Battery Role</span>
+<span class="hero-pill">Export Story</span>
+</div>
+</div>
+</div>
+</div>
+"""
+    ).strip(),
     unsafe_allow_html=True,
 )
 
 if not run_button:
     st.markdown(
-        """
-        <div class="soft-note">
-            Select a planning date from the sidebar and load the energy story.
-        </div>
-        """,
+        dedent(
+            """
+<div class="soft-note">
+Select a planning date from the sidebar and load the energy story.
+</div>
+            """
+        ).strip(),
         unsafe_allow_html=True,
     )
     st.stop()

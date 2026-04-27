@@ -2,6 +2,7 @@ import json
 import base64
 from pathlib import Path
 from datetime import date
+from textwrap import dedent
 
 import numpy as np
 import pandas as pd
@@ -1059,6 +1060,11 @@ with st.sidebar:
     run_button = st.button("Load 48h Plan", use_container_width=True)
     st.caption(f"{optimization_horizon_hours}-hour horizon · {interval_minutes}-minute resolution · {expected_rows} intervals")
 
+if "auto_load_48h_plan" not in st.session_state:
+    st.session_state["auto_load_48h_plan"] = True
+
+run_button = run_button or st.session_state.pop("auto_load_48h_plan", False)
+
 
 # =========================================================
 # HERO
@@ -1068,25 +1074,27 @@ if logo_b64:
     hero_logo_html = f'<img class="brand-logo" src="data:image/png;base64,{logo_b64}" alt="Logo">'
 
 st.markdown(
-    f"""
+    dedent(
+        f"""
 <div class="hero-card">
-    <div class="brand-row">
-        {hero_logo_html}
-        <div>
-            <div class="hero-title">Your 48-Hour Energy Plan</div>
-            <div class="hero-subtitle">
-                See the best times to buy electricity, store solar energy, use the battery, or export surplus energy
-                across the next 48 hours.
-            </div>
-            <div>
-                <span class="hero-pill">48-Hour Plan</span>
-                <span class="hero-pill">Action-Focused</span>
-                <span class="hero-pill">Buy · Store · Use · Export</span>
-            </div>
-        </div>
-    </div>
+<div class="brand-row">
+{hero_logo_html}
+<div>
+<div class="hero-title">Your 48-Hour Energy Plan</div>
+<div class="hero-subtitle">
+See the best times to buy electricity, store solar energy, use the battery, or export surplus energy
+across the next 48 hours.
 </div>
-""",
+<div>
+<span class="hero-pill">48-Hour Plan</span>
+<span class="hero-pill">Action-Focused</span>
+<span class="hero-pill">Buy · Store · Use · Export</span>
+</div>
+</div>
+</div>
+</div>
+"""
+    ).strip(),
     unsafe_allow_html=True,
 )
 
