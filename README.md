@@ -1,4 +1,4 @@
-[![CI/CD Pipeline](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml)
+[![CI/CD Pipeline](https://github.com/joschamz/hems-automation/actions/workflows/workflow-02.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/joschamz/hems-automation/actions/[...]
 ![Dashboard](https://img.shields.io/badge/Dashboard-Streamlit-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)
 ![ML Model](https://img.shields.io/badge/ML%20Model-LightGBM-yellow?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PC9zdmc+)
@@ -9,7 +9,7 @@
 
 **Contributors:** Joscha Metz, Mokhalad Abdulqader, Mehdi Zamani
 
-> **Capstone Project** — The central thesis of this project is simple: **you cannot optimize what you cannot predict**. A home battery system without forecasting can only react to the present — charging when the sun shines now, discharging when prices are high now. This system instead looks 48 hours ahead, combining machine-learned load predictions, solar irradiance forecasts, and real day-ahead electricity prices to solve for the globally optimal charge/discharge schedule via linear programming. The result is an energy flow that is simultaneously more **financially profitable** (minimizing grid cost through price arbitrage) and more **climate-friendly** (maximizing self-consumption of renewable solar energy and reducing grid dependency).
+> **Capstone Project** — The central thesis of this project is simple: **you cannot optimize what you cannot predict**. A home battery system without forecasting can only react to the present ��[...]
 
 ## Table of Contents
 
@@ -29,13 +29,13 @@
 
 ### Forecasting as the Foundation for Optimization
 
-Most home battery systems operate on simple rules: charge when solar is available, discharge when needed. This works — but it leaves significant value on the table. The key insight this project demonstrates is that **forecasting unlocks optimization**:
+Most home battery systems operate on simple rules: charge when solar is available, discharge when needed. This works — but it leaves significant value on the table. The key insight this project [...]
 
 - Without a load forecast, the battery cannot anticipate a high-consumption evening peak and pre-charge during cheap midday hours.
 - Without a solar forecast, the system cannot decide whether to store energy now or wait for tomorrow's stronger irradiance.
 - Without day-ahead prices, arbitrage — buying cheap, selling or avoiding expensive grid energy — is impossible.
 
-By combining all three forecasts into a single 48-hour horizon and solving a linear program over it, the system finds the schedule that **minimizes electricity cost and maximizes solar self-consumption simultaneously**. This dual objective makes the system both financially profitable for the homeowner and environmentally beneficial by reducing grid draw during high-emission periods.
+By combining all three forecasts into a single 48-hour horizon and solving a linear program over it, the system finds the schedule that **minimizes electricity cost and maximizes solar self-consum[...] 
 
 The dashboard makes this optimization transparent and inspectable:
 - **When should the battery charge or discharge?** → Solved globally across 192 slots, not slot-by-slot
@@ -109,7 +109,7 @@ Manual alternative:
 pyenv local 3.11.3
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip setuptools wheel
 pip install -e ".[dev]"
 ```
 
@@ -123,7 +123,7 @@ PowerShell:
 pyenv local 3.11.3
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip setuptools wheel
 pip install -e ".[dev]"
 ```
 
@@ -133,7 +133,7 @@ Git Bash:
 pyenv local 3.11.3
 python -m venv .venv
 source .venv/Scripts/activate
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip setuptools wheel
 pip install -e ".[dev]"
 ```
 
@@ -201,17 +201,17 @@ From then on, the forecast and dispatch steps repeat every 15 minutes in a conti
 
 ### Load Forecasting
 
-- **Model architecture**: the production forecaster is a direct multi-step model built as `MultiOutputRegressor(LGBMRegressor(...))`. Instead of predicting one step recursively, it predicts the full 48-hour horizon directly as 192 quarter-hour targets (`target_t+1` to `target_t+192`).
-- **Core input features**: the model combines calendar features (`hour`, `day_of_week`, `month`, `is_weekend`, `is_holiday`), historical load lags (`lag_1`, `lag_2`, `lag_3`, `lag_96`, `lag_192`), short-term deltas, and rolling statistics (`rolling_mean_1h`, `rolling_mean_24h`, `rolling_std_1h`). This gives the model both immediate recency and daily-pattern context.
-- **Weather data in the model**: weather is not just used for solar forecasting; it is also part of the load-forecast feature vector. The training pipeline includes 25 Open-Meteo variables such as temperature, humidity, dew point, apparent temperature, precipitation, cloud cover, pressure, wind, and radiation features including `shortwave_radiation`, `direct_radiation`, `diffuse_radiation`, and `global_tilted_irradiance`. Historical timestamps are filled from the Open-Meteo archive API, future timestamps from the forecast API, and hourly values are interpolated onto the 15-minute UTC household calendar. The weather utility can also derive extra signals like heating/cooling degree terms and rain flags, but the current production trainer uses the raw weather columns listed in `weather_feature_cols`.
-- **Metrics used during model development**: the modeling notebook evaluates validation **MAE** and **RMSE** on the flattened 48-hour forecast output and also inspects **MAE per forecast horizon step**. It additionally compares feature sets and baseline model families before settling on the LightGBM-based multi-output approach. The daily production orchestrator currently retrains and saves the model, but it does not yet persist or display these validation metrics during each loop iteration.
-- **How hyperparameters were chosen**: hyperparameter tuning was done offline in `notebooks/household_load-trained_model.ipynb`, where candidate LightGBM settings are tested over a search space covering `n_estimators`, `learning_rate`, `num_leaves`, `max_depth`, `min_child_samples`, `subsample`, `colsample_bytree`, `reg_alpha`, and `reg_lambda`, then ranked by validation RMSE/MAE. The looped production training does **not** rerun that search every 15-minute cycle or every daily retrain. Instead, it reuses one fixed parameter set that was selected from those experiments: `n_estimators=200`, `learning_rate=0.03`, `num_leaves=127`, `max_depth=5`, `min_child_samples=50`, `subsample=0.9`, `colsample_bytree=0.7`, `reg_alpha=0.0`, `reg_lambda=0.1`.
-- **Retraining behaviour**: the model is retrained once per calendar day using all data available up to the current timestamp, then the three most recent model files are retained. In other words, the loop updates model weights on newly available history, but the model class and tuned hyperparameters remain fixed unless changed manually in code.
+- **Model architecture**: the production forecaster is a direct multi-step model built as `MultiOutputRegressor(LGBMRegressor(...))`. Instead of predicting one step recursively, it predicts the f[...]
+- **Core input features**: the model combines calendar features (`hour`, `day_of_week`, `month`, `is_weekend`, `is_holiday`), historical load lags (`lag_1`, `lag_2`, `lag_3`, `lag_96`, `lag_192`)[...]
+- **Weather data in the model**: weather is not just used for solar forecasting; it is also part of the load-forecast feature vector. The training pipeline includes 25 Open-Meteo variables such a[...]
+- **Metrics used during model development**: the modeling notebook evaluates validation **MAE** and **RMSE** on the flattened 48-hour forecast output and also inspects **MAE per forecast horizon [...]
+- **How hyperparameters were chosen**: hyperparameter tuning was done offline in `notebooks/household_load-trained_model.ipynb`, where candidate LightGBM settings are tested over a search space c[...]
+- **Retraining behaviour**: the model is retrained once per calendar day using all data available up to the current timestamp, then the three most recent model files are retained. In other words,[...]
 
 ### Solar & Price Forecasting
 
-- **Solar**: Open-Meteo API (no API key required). Irradiance is converted to estimated generation using panel parameters from `user_config.json`. Falls back to a clear-sky approximation if the API is unavailable.
-- **Day-ahead prices**: ENTSOE Transparency API (DE_LU bidding zone), returned in EUR/MWh and ct/kWh. If D+1 prices have not yet been published (typically before ~13:00 CET), the function returns `NaN` rows with `source="not_published"` rather than raising an error.
+- **Solar**: Open-Meteo API (no API key required). Irradiance is converted to estimated generation using panel parameters from `user_config.json`. Falls back to a clear-sky approximation if the A[...]
+- **Day-ahead prices**: ENTSOE Transparency API (DE_LU bidding zone), returned in EUR/MWh and ct/kWh. If D+1 prices have not yet been published (typically before ~13:00 CET), the function returns[...]
 
 ### Dispatch Optimization
 
@@ -227,7 +227,7 @@ The dispatch step solves two strategies over the 48-hour horizon and stores both
 
 ### KPI Reporting
 
-Both strategies produce per-slot and aggregated KPIs including: grid import/export volumes, battery SoC trajectory, estimated electricity cost, self-sufficiency ratio, and the cost delta between rule-based and LP strategies.
+Both strategies produce per-slot and aggregated KPIs including: grid import/export volumes, battery SoC trajectory, estimated electricity cost, self-sufficiency ratio, and the cost delta between [...]
 
 ---
 
@@ -281,8 +281,8 @@ jupyter lab
 
 ## Reproducibility & Limitations
 
-- **External API dependency**: Price data requires a valid ENTSOE API key and network access. Solar data requires Open-Meteo availability. Both utilities have graceful fallbacks but forecast quality degrades without live data.
-- **Fixed training dataset**: The feature-engineered input file is a static offline artifact. The system does not ingest live meter readings; the time-slice cutoff simulates a rolling production scenario.
+- **External API dependency**: Price data requires a valid ENTSOE API key and network access. Solar data requires Open-Meteo availability. Both utilities have graceful fallbacks but forecast qual[...]
+- **Fixed training dataset**: The feature-engineered input file is a static offline artifact. The system does not ingest live meter readings; the time-slice cutoff simulates a rolling production [...]
 - **No hardware integration**: The system generates schedules but does not interface with real battery management systems, inverters, or smart meters. It is a decision-support prototype.
 - **Development environment**: Dev dependencies are bundled with production dependencies. In a production deployment these would be separated.
 - **Prototype scope**: This project is a capstone demonstration of the full ML + optimization + UI pipeline. It is not hardened for unattended production operation.
